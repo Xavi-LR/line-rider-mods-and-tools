@@ -38,7 +38,6 @@
       currentTool = newTool;
 
       if (newTool === TOOL_ID) {
-        log("🟢 Fill Tool activated");
         // Fill Tool activated
         const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
         if (!window.fillToolState) window.fillToolState = {};
@@ -55,12 +54,10 @@
           window.fillToolState.selectedLines = matchingLines;
 
           renderSelected();
-          log("sel lines:", window.fillToolState.selectedLines);
         }
       }
 
       if (prevTool === TOOL_ID && newTool !== TOOL_ID) {
-        log("🔴 Fill Tool deactivated");
         // Fill Tool deactivated
         window.fillToolState.selectedLines ??= [];
         const selectedPoints = new Set();
@@ -151,8 +148,6 @@
       ...fillToolDefaults,
       selectedLines: savedSelectedLines
     };
-
-    console.log("✅ Fill Tool reset to defaults:", window.fillToolState);
   }
 
   function distance(v1, v2) {
@@ -259,7 +254,6 @@
       if (!seen.has(key)) {
         seen.add(key);
         unique.push(line);
-        log("unique bridge line:", key);
       }
     }
     return unique;
@@ -342,7 +336,6 @@
         layer: outlineLayer
       }))
       : [];
-    console.log("Bridge lines to add:", bridgeLines);
 
     const outlineLines = window.fillToolState.outlineMode
       ? lines.flat().filter(l => !l.isBridge).map(l => ({
@@ -506,18 +499,13 @@
         const loopSize = path.length + 1;
 
         if (isClosed) {
-          log("is closed");
           if (window.fillToolState.maxLines < loopSize) continue;
           if (window.fillToolState.minLines > loopSize) continue;
 
 
           // remove duplicate bridge lines (im looking at YOU, intersections!!!)
-
-          log("all bridge lines:", bridgeLinesThisLoop)
           bridgeLinesThisLoop.splice(0, bridgeLinesThisLoop.length, ...removeDuplicateLines(bridgeLinesThisLoop));
-          log("all bridge lines after dupes removed:", bridgeLinesThisLoop)
 
-          log("lines selected:", path)
           let fullLoop = [...path];
           const d3 = distance(next.p2, expectedReturnPoint);
           fullLoop.push(next);
@@ -545,11 +533,9 @@
           }
 
           // remove intersecting lines replaced with bridge intersections
-          log("all fullLoop lines:", fullLoop)
           if (window.fillToolState.bridgeInter) {
             fullLoop = fullLoop.filter(line => !line.isInter);
           }
-          log("all fullLoop lines after inters removed:", fullLoop)
 
           if (fullLoop[0] === undefined) { // this is because sometimes the first line epic fails
             fullLoop.shift();
@@ -559,7 +545,6 @@
           return fullLoop;
           break;
         }
-        log("trying next line:", next);
         if (!used.has(next.id)) {
           const result = dfs(next, [...path], remainingLines.filter(l => l.id !== next.id), expectedReturnPoint);
           if (result) return result;
@@ -741,7 +726,7 @@
                 renderSelected();
                 log("sel lines:", window.fillToolState.selectedLines);
               }
-              genAll(combinedLoop, line, false) // now if we were to gen "it" all, that would be gross!!! 💀
+              genAll(combinedLoop, line, false) // now if we were to gen "it" all, that would be gross!!!
               break;
             } else {
               log('No loop found for this line.');
