@@ -3,6 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Tobias Bessler, updated for blender by Xavi
 // @description  Export selected lines into an SVG, or JSON w/ proper origin point and optional layer automation
+// @icon         https://www.linerider.com/favicon.ico
 // @version      1.2.0
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
