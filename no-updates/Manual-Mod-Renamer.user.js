@@ -4,6 +4,7 @@
 // @author       Xavi
 // @version      0.1.0
 // @description  Rename mods
+// @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
