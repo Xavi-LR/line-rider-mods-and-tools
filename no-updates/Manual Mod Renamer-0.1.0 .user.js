@@ -1,11 +1,14 @@
 // ==UserScript==
-// @name         Mod Renamer but like manual and no cool ui
+// @name         Mod Renamer
 // @namespace    https://www.linerider.com/
 // @author       Xavi
 // @version      0.1.0
 // @description  Rename mods
-// @icon         https://www.linerider.com/favicon.ico
+
 // @match        https://www.linerider.com/*
+// @match        https://*.official-linerider.com/*
+// @match        https://*.surge.sh/*
+
 // @grant        none
 // ==/UserScript==
 
@@ -40,10 +43,7 @@
     });
   }
 
-  let attempts = 0;
   const interval = setInterval(() => {
     renameButtons();
-    attempts++;
-    if (attempts > 20) clearInterval(interval);
-  }, 500);
+  }, 2000);
 })();
