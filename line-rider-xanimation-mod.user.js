@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      2.0.0
+// @version      2.0.1
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -209,8 +209,19 @@ try {
   const allLines = [];
   const layersArray = getSimulatorLayers(this.store.getState());
   let layerIndex = this.state.layerOrigin;
+  const inverse = this.state.inverse ? -1 : 1
 
   for (let i = 0; i < this.state.aLength - 1; i++) {
+    layerIndex += 1 * this.state.aLayers * inverse;
+
+    if (layerIndex > this.state.groupEnd) {
+      layerIndex = this.state.groupBegin;
+    }
+
+    if (layerIndex < this.state.groupBegin) {
+      layerIndex = this.state.groupEnd;
+    }
+
     const preBB = getBoundingBox(pretransformedLines);
     const preCenter = new V2({
       x: preBB.x + 0.5 * preBB.width,
@@ -388,7 +399,7 @@ if (this.state.rScaleY !== 1) {
       if (typeof baseIndex === "undefined") {
         console.warn("Could not find base index for layer id:", originalLayerId);
       } else {
-        const step = this.state.aLayers * (layerIndex - this.state.groupBegin + 1);
+        const step = (layerIndex - this.state.layerOrigin);
         const targetIndex = baseIndex + step;
 
         if (targetIndex < 0 || targetIndex >= layersArray.length) {
@@ -433,11 +444,6 @@ if (this.state.rScaleY !== 1) {
     // prepare for next iteration
     pretransformedLines = posttransformedLines.slice();
     posttransformedLines.length = 0;
-
-    layerIndex += 1;
-    if (layerIndex > this.state.groupEnd / this.state.aLayers) {
-      layerIndex = this.state.groupBegin;
-    }
 
     let endTime = performance.now();
 
@@ -559,6 +565,7 @@ this.defaults = {
   oEndFrame: false,
   oPrevFrames: false,
   oFramesLength: 1,
+  oInverse: false,
   opacity: 0.5,
 
   autoLayerSync: false,
@@ -576,6 +583,7 @@ this.defaults = {
 
   // === Transform Tools (transTools) ===
   aLength: 1,
+  inverse: false,
   camLock: false,
   transTools: false,
   nudgeXSmall: 0,
@@ -2007,6 +2015,7 @@ e("div", null,
                 "div",
                 { style: this.sectionBox },
             this.renderSlider("aLength", { min: 0, max: 500, step: 1 }, "Animation Length"),
+            this.renderCheckbox("inverse", "Animate Backwards"),
 this.renderSpacer(),
             this.renderCheckbox("camLock", "Lock Animation to Camera"),
             this.renderSlider("nudgeXSmall", { min: -10, max: 10, step: 0.1 }, "Small Move X"),
