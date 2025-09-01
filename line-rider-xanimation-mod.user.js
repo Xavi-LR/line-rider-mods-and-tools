@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      2.0.1
+// @version      2.0.2
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
