@@ -180,7 +180,7 @@ if (selectToolState) {
 
         if (this.changed) {
             this.store.dispatch(revertTrackChanges());
-            this.store.dispatch(setEditScene(new Millions.Scene()));
+//            this.store.dispatch(setEditScene(new Millions.Scene())); // this was preventing the overlay from displaying when active
             this.changed = false;
         }
 
@@ -231,6 +231,7 @@ try {
     const alongRot = this.state.alongRot * Math.PI / 180;
     const preTransform = buildRotTransform(-alongRot);
     const selectedLines = [];
+    const mainAccel = (Math.pow((i + 1), this.state.accel))
 
     for (let line of pretransformedLines) {
       const p1 = preparePointAlong(
@@ -251,19 +252,18 @@ try {
       y: bb.y + (0.5 - this.state.anchorY) * bb.height
     });
     const nudge = new V2({
-      x: this.state.nudgeXSmall + this.state.nudgeXBig,
-      y: -1 * (this.state.nudgeYSmall + this.state.nudgeYBig)
+      x: mainAccel * (this.state.nudgeXSmall + this.state.nudgeXBig),
+      y: -1 * mainAccel * (this.state.nudgeYSmall + this.state.nudgeYBig)
     });
-
-    const transform = this.getTransform();
-    const transformedLines = [];
 
     const alongPerspX = this.state.alongPerspX * 0.01;
     const alongPerspY = this.state.alongPerspY * 0.01;
     const postTransform = buildRotTransform(alongRot);
 
-    let perspX = this.state.perspX;
-    let perspY = this.state.perspY;
+    let perspX = mainAccel * this.state.perspX;
+    let perspY = mainAccel * this.state.perspY;
+    const transform = this.getTransform(mainAccel);
+    const transformedLines = [];
 
     const perspSafety = Math.pow(10, this.state.perspClamping);
 
@@ -291,24 +291,41 @@ try {
       const line = selectedLines[lineIdx];
 
       // compute per-line random seeds and flags
-      const baseId = Number(line.original.id) || 0;
-      const shakeOffset = this.state.shake ? i * 1000 : 0;
-      const seedBase = baseId + this.state.rSeed + shakeOffset;
-      const accel = (Math.pow((i + 1), this.state.rAccel))
+const baseId = Number(line.original.id) || 0;
+
+let shakeOffset = 0;
+let notFreeze = true;
+
+if (this.state.shake) {
+  // Ensure interval is at least 1
+  const interval = Math.max(1, Math.floor(this.state.shakeInterval || 1));
+  const bucket = Math.ceil(i / interval);
+
+  // previous frame's bucket (0 if this is the first frame)
+  const prevFrameNum = Math.max(0, i - 1);
+  const prevBucket = prevFrameNum === 0 ? 0 : Math.ceil(prevFrameNum / interval);
+  shakeOffset = bucket * 1000;
+  notFreeze = !this.state.shakeFreeze || (bucket !== prevBucket);
+} else {
+  shakeOffset = 0;
+  notFreeze = !this.state.shakeFreeze;
+}
+const seedBase = baseId + this.state.rSeed + shakeOffset;
+const accel = Math.pow((i + 1), this.state.rAccel);
 
       // per-line random translation
       let extraNudgeX = 0;
       let extraNudgeY = 0;
-      if (this.state.rMoveX !== 0) {
+      if (this.state.rMoveX !== 0 && notFreeze) {
         extraNudgeX = accel * seedRandom(seedBase, this.state.rMoveX);
       }
-      if (this.state.rMoveY !== 0) {
+      if (this.state.rMoveY !== 0 && notFreeze) {
         extraNudgeY = accel * seedRandom(seedBase + 100, this.state.rMoveY);
       }
 
       let scaleRandomX = 1;
       let scaleRandomY = 1;
-if (this.state.rScaleX !== 1) {
+if (this.state.rScaleX !== 1 && notFreeze) {
   if (this.state.rScaleX > 1) {
     // random between 1 and rScaleX
     const rand01 = (seedRandom(seedBase + 200, 1) + 1) / 2;
@@ -320,7 +337,7 @@ if (this.state.rScaleX !== 1) {
   }
 }
 
-if (this.state.rScaleY !== 1) {
+if (this.state.rScaleY !== 1 && notFreeze) {
   if (this.state.rScaleY > 1) {
     // random between 1 and rScaleY
     const rand01 = (seedRandom(seedBase + 300, 1) + 1) / 2;
@@ -334,7 +351,7 @@ if (this.state.rScaleY !== 1) {
 
       // per-line random rotation (degrees -> radians)
       let rotRandomRad = 0;
-      if (this.state.rRotate !== 0) {
+      if (this.state.rRotate !== 0 && notFreeze) {
         const rotDeg = accel * seedRandom(seedBase + 400, this.state.rRotate);
         rotRandomRad = rotDeg * Math.PI / 180;
       }
@@ -473,7 +490,8 @@ if (this.state.rScaleY !== 1) {
         this.componentUpdateResolved = true;
     }
 
-    getTransform () {
+    getTransform (mainAccel) {
+
         let scaleX = this.state.scale * this.state.scaleX;
         if (this.state.flipX) {
             scaleX *= -1;
@@ -485,24 +503,14 @@ if (this.state.rScaleY !== 1) {
         const transform = buildAffineTransform(
             this.state.skewX, this.state.skewY,
             scaleX, scaleY,
-            this.state.rotate * Math.PI / 180
+            mainAccel * this.state.rotate * Math.PI / 180
         );
         return transform;
     }
 
     active () {
         return this.state.active && this.selectedPoints.size > 0 && (
-            this.state.alongPerspX !== 0 || this.state.alongPerspY !== 0 ||
-            this.state.alongRot !== 0 ||
-            this.state.anchorX !== 0 || this.state.anchorY !== 0 ||
-            this.state.skewX !== 0 || this.state.skewY !== 0 ||
-            this.state.scaleX !== 1 || this.state.scaleY !== 1 || this.state.scale !== 1 ||
-            this.state.flipX || this.state.flipY ||
-            this.state.rotate !== 0 ||
-            this.state.perspX || this.state.perspY ||
-            this.state.nudgeXSmall !== 0 || this.state.nudgeXBig !== 0 ||
-            this.state.nudgeYSmall !== 0 || this.state.nudgeYBig !== 0 ||
-            this.state.aLength !== 1
+            this.state.aLength !== 1 // this used to be a long list of things but it shouldnt really transform unless aLength is set
         );
     }
 
@@ -578,14 +586,16 @@ this.defaults = {
   aLayersSection: true,
   aFrames: 1,
   aFramesTemp: 1,
+  customLayerCount: false,
   aLayers: 1,
   editLayers: false,
 
   // === Transform Tools (transTools) ===
+  transTools: false,
   aLength: 1,
   inverse: false,
   camLock: false,
-  transTools: false,
+  accel: 0,
   nudgeXSmall: 0,
   nudgeXBig: 0,
   nudgeYSmall: 0,
@@ -619,6 +629,8 @@ this.defaults = {
   randomness: false,
   rAccel: 0,
   shake: false,
+  shakeInterval: 1,
+  shakeFreeze: false,
   rSeed: 0,
   rMoveX: 0,
   rMoveY: 0,
@@ -830,6 +842,8 @@ async copyAnimatedLayer(folderStartIndex, step) {
 
     createdIds.add(candidate.id);
   }
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
   this.setState((prev) => {
     const prevVal = parseInt(prev.aLayers, 10) || 1;
     return { aLayers: prevVal + 1 };
@@ -845,21 +859,49 @@ setColorForSequence(folderStartIndex, step, color) {
     const newName = `${color}${rest}`;
     store.dispatch(renameLayer(layer.id, newName));
   });
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
 }
 
-// Set aLayers by counting layers in active folder ending with ".1" (after color prefix)
-copyLayerCount() {
-  const folder = this.getFolderLayers();
-  if (!folder || folder.length === 0) return;
-  const count = folder.reduce((acc, { layer }) => {
+// Set aLayers by counting layers in active folder ending with ".1"
+computeLayerCountFromFolder(folder) {
+  if (!folder || folder.length === 0) return 0;
+
+  // helper to test for a suffix like ".1" or ". 1"
+  const makeTester = (n) => new RegExp(`\\.\\s*${n}$|\\.${n}$`, "u");
+
+  // first pass: .1
+  let count = folder.reduce((acc, { layer }) => {
     const raw = layer.name || "";
     const rest = raw.substring(7) || "";
-    return acc + (/\.\s*1$|\.1$/u.test(rest) ? 1 : 0);
+    return acc + (makeTester(1).test(rest) ? 1 : 0);
   }, 0);
-  if (count > 0) {
+
+  // second pass: .2
+  if (count <= 0) {
+    count = folder.reduce((acc, { layer }) => {
+      const raw = layer.name || "";
+      const rest = raw.substring(7) || "";
+      return acc + (makeTester(2).test(rest) ? 1 : 0);
+    }, 0);
+  }
+
+  // fallback: folder length
+  if (count <= 0) {
+    count = folder.length;
+  }
+
+  return count;
+}
+
+copyLayerCount() {
+  const folder = this.getFolderLayers();
+  const count = this.computeLayerCountFromFolder(folder);
+  if (count !== this.state.aLayers) {
     this.setState({ aLayers: count });
   }
 }
+
 
 // Try to get current frame number from known places in the store; fallback to 1
 getCurrentFrameNumber() {
@@ -921,6 +963,8 @@ moveLayerSequenceUp(folderStartIndex, step) {
     working.splice(curIdx, 1);
     working.splice(i, 0, desiredId);
   }
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
 }
 
 moveLayerSequenceDown(folderStartIndex, step) {
@@ -964,6 +1008,8 @@ moveLayerSequenceDown(folderStartIndex, step) {
     working.splice(curIdx, 1);
     working.splice(i, 0, desiredId);
   }
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
 }
 
 // Delete all frames of the animation layer
@@ -971,10 +1017,12 @@ deleteSequence(folderStartIndex, step) {
   const seq = this.getSequenceForFolderIndex(folderStartIndex, step);
   if (!seq.length) return;
   // Ask for confirmation (safer)
-  if (!confirm(`Delete ${seq.length} frame(s) for this animation layer? This cannot be undone.`)) return;
+  if (!confirm(`Delete ${seq.length} frame(s) for this animation layer?`)) return;
   for (const item of seq) {
     store.dispatch({ type: "REMOVE_LAYER", payload: { id: item.layer.id } });
   }
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
   this.setState((prev) => {
     const prevVal = parseInt(prev.aLayers, 10) || 2;
     return { aLayers: prevVal - 1 };
@@ -1313,7 +1361,9 @@ async commitAFrames() {
     }
   }
 
-  // commit success: update state.aFrames to chosen value
+  // commit success: commit layers & update state.aFrames to chosen value
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
   this.setState({ aFrames: aFramesVal });
 }
 
@@ -1417,6 +1467,8 @@ updateFolderLoopName(newBaseOrSettings) {
   const newName = this.buildFolderLoopName(baseName, settings);
   // dispatch rename (use your existing rename action)
   store.dispatch(renameFolder(folder.id, newName));
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
 }
 
 scanForAnimatedFolders() {
@@ -1565,7 +1617,6 @@ disableOInvisFrames() {
   try {
     store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities([]) } });
   } catch (e) {
-    // ignore if Millions/renderer not present
   }
 }
 
@@ -1677,11 +1728,26 @@ renderSpacer(height = 8) {
   return e("div", { style: { height: `${height}px`, flex: "0 0 auto" } });
 }
 
-
         render () {
 if (this.state.oInvisFrames && this.state.updateALot) {
 this._onInvisStoreChange({ force: true })
 }
+  const folder = this.getFolderLayers();
+  const desired = this.computeLayerCountFromFolder(folder);
+
+  if (!this.state.customLayerCount && this.state.active) {
+    if (desired !== this.state.aLayers) {
+      if (!this._layerCountUpdateScheduled) {
+        this._layerCountUpdateScheduled = true;
+        setTimeout(() => {
+          this._layerCountUpdateScheduled = false;
+          if (this.state.aLayers !== desired) {
+            this.setState({ aLayers: desired });
+          }
+        }, 0);
+      }
+    }
+  }
 this.sectionBox = {
   border: "1px solid #ddd",
   padding: "8px",
@@ -1763,9 +1829,6 @@ this.renderSpacer(),
 ),
 this.renderSpacer(),
                   e("button", { onClick: () => { this.scanForAnimatedFolders();} }, "Update Layer Automation"),
-this.renderSpacer(),
-                    this.state.aLayers, e("button", { title: "Get animation-layer count by searching for layers ending with '.1' in this folder",
-                    onClick: () => this.copyLayerCount()}, "Get Layer Count"),
               ),
 this.renderSection("folderSettings", "Layer Automation"),
 this.state.folderSettings
@@ -1860,9 +1923,20 @@ this.state.aLayersSection
   && e(
     "div",
     { style: this.sectionBox },
-                    this.renderSlider("aLayers", { min: 1, max: 20, step: 1 }, "Animated Layers"),
-                    e("button", { title: "Get animation-layer count by searching for layers ending with '.1' in this folder",
-                    onClick: () => this.copyLayerCount()}, "Get Layer Count"),
+            this.state.customLayerCount
+              && e(
+                "div",
+                null,
+                   e("button", emojiButtonProps(`Toggle editable`, () => this.setState({ customLayerCount: false })), "🔓"),
+                    this.renderSlider("aLayers", { min: 1, max: 20, step: 1 }, "Animated Layers "),
+),
+            !this.state.customLayerCount
+              && e(
+                "div",
+                null,
+                   e("button", emojiButtonProps(`Toggle editable`, () => this.setState({ customLayerCount: true })), "🔒"),
+                   "Animated Layers ", e("input", { style: { width: "4em" }, type: "number", value: this.state.aLayers, }),
+),
 
             this.renderCheckbox("editLayers", "Edit Layers"),
     (() => {
@@ -2004,8 +2078,8 @@ e("div", null,
   this.renderSlider("aFramesTemp", { min: 1, max: 200, step: 1 }, "Layer Frames"),
   e("button", {
     onClick: () => this.commitAFrames(),
-    title: "Adds/Removes layers)"
-  }, "Commit Frame Layers")
+    title: "Adds/Removes layers"
+  }, "Commit Layer Frames")
 ),
   ),
 
@@ -2018,14 +2092,17 @@ e("div", null,
             this.renderCheckbox("inverse", "Animate Backwards"),
 this.renderSpacer(),
             this.renderCheckbox("camLock", "Lock Animation to Camera"),
+this.renderSpacer(),
+            this.renderSlider("accel", { min: -10, max: 10, step: 0.1 }, "Accelerate"),
+this.renderSpacer(),
             this.renderSlider("nudgeXSmall", { min: -10, max: 10, step: 0.1 }, "Small Move X"),
             this.renderSlider("nudgeXBig", { min: -10000, max: 10000, step: 10 }, "Large Move X"),
             this.renderSlider("nudgeYSmall", { min: -10, max: 10, step: 0.1 }, "Small Move Y"),
             this.renderSlider("nudgeYBig", { min: -10000, max: 10000, step: 10 }, "Large Move Y"),
 this.renderSpacer(),
-            this.renderSlider("scaleX", { min: 0, max: 10, step: 0.01 }, "Scale X"),
-            this.renderSlider("scaleY", { min: 0, max: 10, step: 0.01 }, "Scale Y"),
-            this.renderSlider("scale", { min: 0, max: 10, step: 0.01 }, "Scale"),
+            this.renderSlider("scaleX", { min: 0, max: 3, step: 0.01 }, "Scale X"),
+            this.renderSlider("scaleY", { min: 0, max: 3, step: 0.01 }, "Scale Y"),
+            this.renderSlider("scale", { min: 0, max: 3, step: 0.01 }, "Scale"),
             this.renderCheckbox("scaleWidth", "Scale Width"),
 this.renderSpacer(),
             this.renderSlider("rotate", { min: -180, max: 180, step: 1 }, "Rotation"),
@@ -2041,8 +2118,8 @@ this.renderSpacer(),
                 this.renderSlider("alongPerspY", { min: -0.5, max: 0.5, step: 0.001 }, "Along Perspective Y"),
                 this.renderSlider("alongRot", { min: -180, max: 180, step: 1 }, "Along Rotation"),
 this.renderSpacer(),
-                this.renderSlider("anchorX", { min: -0.5, max: 0.5, step: 0.01 }, "Anchor X"),
-                this.renderSlider("anchorY", { min: -0.5, max: 0.5, step: 0.01 }, "Anchor Y"),
+                this.renderSlider("anchorX", { min: -1, max: 1, step: 0.01 }, "Anchor X"),
+                this.renderSlider("anchorY", { min: -1, max: 1, step: 0.01 }, "Anchor Y"),
               ),
             this.renderSection("warpTools", "Warp Tools"),
             this.state.warpTools
@@ -2065,10 +2142,18 @@ this.renderSpacer(),
                 { style: this.sectionBox },
                 this.renderSlider("rSeed", { min: 0, max: 10000, step: 1 }, "Seed"),
                 this.renderCheckbox("shake", "Shake"),
+            this.state.shake
+              && e(
+                "div",
+                  null,
+                this.renderSlider("shakeInterval", { min: 0, max: 10, step: 1 }, "Shake Interval"),
+                this.renderCheckbox("shakeFreeze", "Freeze on Unshaky Frames"),
+),
+this.renderSpacer(),
                 this.renderSlider("rAccel", { min: -10, max: 10, step: 0.1 }, "Accelerate"),
 this.renderSpacer(),
-                this.renderSlider("rMoveX", { min: 0, max: 10, step: 0.05 }, "Max Move X"),
-                this.renderSlider("rMoveY", { min: 0, max: 10, step: 0.05 }, "Max Move Y"),
+                this.renderSlider("rMoveX", { min: 0, max: 10, step: 0.01 }, "Max Move X"),
+                this.renderSlider("rMoveY", { min: 0, max: 10, step: 0.01 }, "Max Move Y"),
 this.renderSpacer(),
                 this.renderSlider("rScaleX", { min: 0, max: 2, step: 0.01 }, "Max Scale X"),
                 this.renderSlider("rScaleY", { min: 0, max: 2, step: 0.01 }, "Max Scale Y"),
