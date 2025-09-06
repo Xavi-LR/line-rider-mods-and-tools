@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      2.0.2
+// @version      2.0.3
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -54,9 +54,14 @@ const renameFolder = (id, name) => ({
   payload: { id, name }
 });
 
-const addLayer = (name, type) => ({
+const addLayer = (name) => ({
   type: "ADD_LAYER",
-  payload: { name, type }
+  payload: { name }
+});
+
+const addFolder = (name) => ({
+  type: "ADD_FOLDER",
+  payload: { name }
 });
 
 const moveLayer = (id, index) => ({
@@ -123,9 +128,60 @@ class AnimateMod {
 
     commit () {
         if (this.changed) {
+            if (this.state.selectFinalFrameOnCommit) {
+
+const setToolState = (toolId, state) => ({
+  type: "SET_TOOL_STATE",
+  payload: state,
+  meta: { id: toolId },
+});
+
+const setSelectToolState = toolState => setToolState(SELECT_TOOL, toolState);
+
+    const stateBefore = this.store.getState();
+    const layers = stateBefore.simulator.engine.engine.state.layers.toArray();
+  const activeLayerId = stateBefore.simulator.engine.engine.state.activeLayerId;
+  const activeIndex = layers.findIndex(l => l.id === activeLayerId);
+            // use the prev active layer and aLayers * aLength to determine new active layer
+            const inverse = this.state.inverse ? -1 : 1;
+            let newActiveLayer = activeIndex + ((this.state.aLength - 1) * this.state.aLayers * inverse);
+            const aBoundsLength = this.state.groupEnd - this.state.groupBegin + 1;
+            while (newActiveLayer < (this.state.groupBegin - 1)) {
+                newActiveLayer = newActiveLayer + aBoundsLength
+            }
+
+            while (newActiveLayer > (this.state.groupEnd - 1)) {
+                newActiveLayer = newActiveLayer - aBoundsLength
+            }
+
+            // then use selected lines and this.state.aLength to get the number of new lines, and then select the ids that equal selected lines + number of new lines
+        const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
+        if (selectToolState && selectToolState.selectedPoints) {
+          const allLines = window.Selectors.getSimulatorLines(this.store.getState());
+          function getLineIdsFromPoints(points) {
+            return new Set([...points].map(point => point >> 1));
+          }
+          let lineIds = [];
+          lineIds = [...getLineIdsFromPoints(selectToolState.selectedPoints)];
+          const matchingLines = allLines.filter(line => lineIds.includes(line.id));
+          const idOffset = matchingLines.length * (this.state.aLength - 1)
+          const selectedPoints = new Set();
+for (let line of matchingLines) {
+let selectedLineId = line.id + idOffset
+            selectedPoints.add(selectedLineId * 2);
+            selectedPoints.add(selectedLineId * 2 + 1);
+}
+            const newActiveLayerId = layers[newActiveLayer].id
+            this.state.setActive = newActiveLayerId; // idk why but i literally cannot dispatch setLayerActive here so this is my workaround
             this.store.dispatch(commitTrackChanges());
             this.store.dispatch(revertTrackChanges());
-            this.store.dispatch(setEditScene(new Millions.Scene()));
+      this.store.dispatch(setSelectToolState({ selectedPoints }));
+
+        }
+            } else {
+            this.store.dispatch(commitTrackChanges());
+            this.store.dispatch(revertTrackChanges());
+            }
             this.changed = false;
             this.genCount += 1;
             return true;
@@ -178,9 +234,8 @@ if (selectToolState) {
             return;
         }
 
-        if (this.changed) {
+        if (this.changed && (!this.state.manualUpdateMode || this.state.manualUpdated)) {
             this.store.dispatch(revertTrackChanges());
-//            this.store.dispatch(setEditScene(new Millions.Scene())); // this was preventing the overlay from displaying when active
             this.changed = false;
         }
 
@@ -193,7 +248,19 @@ if (this._transformInProgress) {
   console.warn("Transform already in progress — aborting to avoid re-entry.");
   return;
 }
+if (this.state.manualUpdateMode && !this.state.manualUpdated) {
+  this._transformInProgress = false;
+  return;
+} else if (this.state.manualUpdated) {
+    this.state.manualUpdated = false
+}
 this._transformInProgress = true;
+
+if (this.state.setActive) {
+      this.store.dispatch(setLayerActive(this.state.setActive));
+      this.state.setActive = null;
+}
+
 if (!this.state.manualSetBounds) {
 this.setBoundsAndStartLayer();
 }
@@ -210,17 +277,62 @@ try {
   const layersArray = getSimulatorLayers(this.store.getState());
   let layerIndex = this.state.layerOrigin;
   const inverse = this.state.inverse ? -1 : 1
+  const aLength = this.state.aLength - 1
 
-  for (let i = 0; i < this.state.aLength - 1; i++) {
-    layerIndex += 1 * this.state.aLayers * inverse;
 
-    if (layerIndex > this.state.groupEnd) {
-      layerIndex = this.state.groupBegin;
+const animLines = pretransformedLines.slice();
+const lineLayers = new Map();
+for (const line of animLines) {
+  const L = line.layer;
+  if (!lineLayers.has(L)) lineLayers.set(L, []);
+  lineLayers.get(L).push(line);
+}
+
+for (let i = 0; i < aLength; i++) {
+  layerIndex += 1 * this.state.aLayers * inverse;
+
+  if (layerIndex > this.state.groupEnd) {
+    layerIndex = this.state.groupBegin;
+  }
+  if (layerIndex < this.state.groupBegin) {
+    layerIndex = this.state.groupEnd - this.state.aLayers + 1;
+  }
+
+  if (this.state.editAnimation) {
+    const minLayer = layerIndex;
+    let maxLayer = layerIndex + this.state.aLayers - 1;
+    const groupLength = this.state.groupEnd - this.state.groupBegin + 1
+    while (maxLayer > this.state.groupEnd) {
+        maxLayer = maxLayer - groupLength;
+    }
+    while (maxLayer < this.state.groupBegin) {
+        maxLayer = maxLayer + groupLength;
+    }
+    maxLayer = maxLayer * (this.state.aLength - 1) // i should maybe make it not like this but idk
+
+    // Gather candidate lines from the layer map
+    const groupLines = [];
+    for (let L = minLayer; L <= maxLayer; L++) {
+      const arr = lineLayers.get(L);
+      if (arr && arr.length) groupLines.push(...arr);
     }
 
-    if (layerIndex < this.state.groupBegin) {
-      layerIndex = this.state.groupEnd;
+    if (groupLines.length === 0) {
+      // Make pretransformedLines empty (in-place) like the old filter would
+      pretransformedLines.length = 0;
+      continue;
     }
+
+    const idSet = new Set(groupLines.map(l => l.id));
+
+    for (let j = pretransformedLines.length - 1; j >= 0; j--) {
+      const line = pretransformedLines[j];
+      if (!line || !idSet.has(line.id)) {
+        pretransformedLines.splice(j, 1);
+      }
+    }
+  }
+
 
     const preBB = getBoundingBox(pretransformedLines);
     const preCenter = new V2({
@@ -291,7 +403,11 @@ try {
       const line = selectedLines[lineIdx];
 
       // compute per-line random seeds and flags
-const baseId = Number(line.original.id) || 0;
+let baseId = Number(line.original.id) || 0;
+if (this.state.editAnimation) {
+    // make each frame look at the same line id for each line in the selected animation so the random transforms stay consistent throughout each frame
+    baseId = baseId % this.state.aLayers;
+}
 
 let shakeOffset = 0;
 let notFreeze = true;
@@ -441,10 +557,22 @@ if (this.state.rScaleY !== 1 && notFreeze) {
         widthWithRandom = baseWidth * Math.pow(scaleAvg, i + 1);
       }
 
+      let layerOffset = (baseIndex + (this.state.animationOffset * this.state.aLayers));
+
+            // shift to be within animation group bounds
+            const aBoundsLength = this.state.groupEnd - this.state.groupBegin + 1;
+            while (layerOffset < (this.state.groupBegin - 1)) {
+                layerOffset = layerOffset + aBoundsLength
+            }
+
+            while (layerOffset > (this.state.groupEnd - 1)) {
+                layerOffset = layerOffset - aBoundsLength
+            }
+
       transformedLines.push({
         ...jsonLine,
-        layer: targetLayerId,
-        id: null,
+        layer: this.state.editAnimation ? layersArray[layerOffset].id : targetLayerId,
+        id: this.state.editAnimation ? jsonLine.id : null,
         x1: p1.x + offset.x,
         y1: p1.y + offset.y,
         x2: p2.x + offset.x,
@@ -464,8 +592,8 @@ if (this.state.rScaleY !== 1 && notFreeze) {
 
     let endTime = performance.now();
 
-    if (endTime - startTime > 5000) {
-      console.error("Time exception: Operation took longer than 5000ms to complete");
+    if (endTime - startTime > (this.state.maxUpdateTime * 1000)) {
+      console.error(`Time exception: Operation took longer than ${(this.state.maxUpdateTime * 1000)}ms to complete`);
       this.componentUpdateResolved = true;
       this.store.dispatch(revertTrackChanges());
       this.store.dispatch(setEditScene(new Millions.Scene()));
@@ -483,7 +611,6 @@ if (this.state.rScaleY !== 1 && notFreeze) {
     this.changed = true;
   }
 } finally {
-  // clear re-entrancy guard no matter what
   this._transformInProgress = false;
 }
 
@@ -510,7 +637,7 @@ if (this.state.rScaleY !== 1 && notFreeze) {
 
     active () {
         return this.state.active && this.selectedPoints.size > 0 && (
-            this.state.aLength !== 1 // this used to be a long list of things but it shouldnt really transform unless aLength is set
+            (this.state.aLength !== 1 && !this.state.includeFirstFrame) || (this.state.aLength !== 0 && this.state.includeFirstFrame)
         );
     }
 
@@ -548,6 +675,7 @@ if (!(minInd === Infinity)) {
 }
 
 function main () {
+
     const {
         React,
         store
@@ -558,6 +686,16 @@ function main () {
     class XaviAnimateModComponent extends React.Component {
         constructor (props) {
             super(props);
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        console.log("updating");
+    if (this.state.manualUpdateMode) {
+        this.state.manualUpdated = true;
+        this.mod.onUpdate();
+    }
+    }
+});
 
 this.defaults = {
   // === Animation Tools (animTools) ===
@@ -575,12 +713,15 @@ this.defaults = {
   oFramesLength: 1,
   oInverse: false,
   opacity: 0.5,
+  oSelected: true,
 
   autoLayerSync: false,
   autoLock: true,
+  autoLockActive: false,
 
   // === Animation Folder (folderSettings) ===
   folderSettings: false,
+  copyLines: false,
 
   // === Animation Layers (aLayersSection) ===
   aLayersSection: true,
@@ -593,6 +734,8 @@ this.defaults = {
   // === Transform Tools (transTools) ===
   transTools: false,
   aLength: 1,
+  editAnimation: false,
+  animationOffset: 0,
   inverse: false,
   camLock: false,
   accel: 0,
@@ -625,7 +768,7 @@ this.defaults = {
   skewX: 0,
   skewY: 0,
 
-  // === Translate Tools (translateTools) ===
+  // === Randomness (randomness) ===
   randomness: false,
   rAccel: 0,
   shake: false,
@@ -638,6 +781,14 @@ this.defaults = {
   rScaleY: 1,
   rScaleWidth: false,
   rRotate: 0,
+
+  // === Performance & Commit (performance) ===
+  performance: false,
+  manualUpdateMode: false,
+  maxUpdateTime: 5,
+
+  selectFinalFrameOnCommit: true,
+  resetALengthOnCommit: false,
 };
 
             this.state = {
@@ -683,11 +834,16 @@ this.defaults = {
         }
 
         onCommit () {
+            if (this.state.resetALengthOnCommit) {
+                this.state.aLength = 1;
+            }
             this.mod.commit();
-            this.setState({
-                // ...this.defaults,
-                active: false
-            });
+            if (!this.state.selectFinalFrameOnCommit) {
+                this.setState({
+                    // ...this.defaults,
+                    active: false
+                });
+            }
         }
 
 // find simulator layers + active layer info
@@ -781,6 +937,8 @@ renameSequence(folderStartIndex, step) {
     const newName = `${colorPrefix}${baseClean}.${i + 1}`;
     store.dispatch(renameLayer(item.layer.id, newName));
   });
+        store.dispatch(commitTrackChanges());
+        store.dispatch(revertTrackChanges());
 }
 
 // After dispatching ADD_LAYER, call this to locate the new layer created with that name.
@@ -1035,7 +1193,7 @@ this.setState({ autoLayerSync: true })
   if (this._autoLayerUnsub) return; // already enabled
   // remember last frame so we don't run on attach unnecessarily
   this._lastSyncedFrame = null;
-  // subscribe to store changes
+  // subscribe to store changes AND xavilr
   this._autoLayerUnsub = store.subscribe(() => this._onStoreFrameChange());
   // run once on enable
   this._onStoreFrameChange();
@@ -1072,13 +1230,12 @@ _onStoreFrameChange() {
     let firstVisibleFolderIndex = -1;
     for (let i = 0; i < folderLayers.length; i++) {
       const id = folderLayers[i].layer.id;
-      // call getLayerVisibleAtTime if available
+      // call getLayerVisibleAtTime on the phone and see if they pick up
       let visible = false;
       if (typeof getLayerVisibleAtTime === "function") {
         // getLayerVisibleAtTime expects (id, index)
         visible = !!getLayerVisibleAtTime(id, frameIndex);
       } else {
-        // If function missing, bail out silently
         return;
       }
       if (visible) { firstVisibleFolderIndex = i; break; }
@@ -1089,8 +1246,8 @@ _onStoreFrameChange() {
       return;
     }
 
-    // compute animation frame (1-based)
-    const aLayers = Math.max(1, parseInt(this.state.aLayers, 10) || 1);
+    // compute animation frame
+    const aLayers = this.state.aLayers || 1;
     const animationFrame = Math.floor(firstVisibleFolderIndex / aLayers) + 1;
 
     // determine previous active layer's index within the folder (to preserve position within a frame)
@@ -1119,10 +1276,22 @@ _onStoreFrameChange() {
       try {
         // lock previous active layer if it exists and is different from chosen
         if (activeLayerId && activeLayerId !== chosen.id) {
+    if (this.state.autoLockActive) {
           store.dispatch(setLayerEditable(activeLayerId, false));
+    } else {
+        for (let k = 0; k < aLayers; ++k) {
+          store.dispatch(setLayerEditable(activeLayerId + k - prevPositionWithinFrame, false));
+}
+    }
         }
-        // ensure chosen layer is unlocked
+        // unlock chosen layer
+    if (this.state.autoLockActive) {
         store.dispatch(setLayerEditable(chosen.id, true));
+    } else {
+        for (let k = 0; k < aLayers; ++k) {
+          store.dispatch(setLayerEditable(chosen.id + k - prevPositionWithinFrame, true));
+}
+    }
       } catch (err) {
         console.warn("autoLock: setLayerEditable error", err);
       }
@@ -1138,7 +1307,6 @@ _onStoreFrameChange() {
 }
 
 _onInvisStoreChange(opts = {}) {
-  try {
     const force = !!(opts && opts.force);
 
     // if not forced and feature disabled, do nothing
@@ -1158,7 +1326,7 @@ _onInvisStoreChange(opts = {}) {
     const editorPos = getEditorCamPos(stateBefore);
     const allLines = window.Selectors.getSimulatorLines(store.getState()) || [];
 
-    // filter nearby lines (keeps performance reasonable)
+    // filter nearby lines to not lag as much
     const radius = 300;
     const radiusSq = radius * radius;
     const nearLines = allLines.filter(line => {
@@ -1186,7 +1354,7 @@ _onInvisStoreChange(opts = {}) {
       }
     }
 
-    const oPrev = !!this.state.oPrevFrames;
+    const oPrev = this.state.oPrevFrames;
     const framesLen = Math.max(1, parseInt(this.state.oFramesLength, 10) || 1);
 
     // parse opacity state as 0..1 and clamp
@@ -1200,7 +1368,7 @@ _onInvisStoreChange(opts = {}) {
       if (!oPrev) return p;
 
       for (let d = 1; d <= framesLen; ++d) {
-        const t = frameIndex - d;
+        const t = this.state.oInverse ? frameIndex + d : frameIndex - d;
         if (t < 0) continue;
         try {
           if (getLayerVisibleAtTime(layerId, t)) {
@@ -1214,61 +1382,96 @@ _onInvisStoreChange(opts = {}) {
       return 0;
     };
 
-    const sceneEntities = [];
-    let entityIndex = 0;
-    const maxLayerIdx = layersArr.length || 0;
-    const VISIBLE_Z_OFFSET = (maxLayerIdx + 5) * 10000;
+// --- build a list of entries to sort deterministically, then assign unique z per sorted index ---
+const layerById = new Map(layersArr.map((l, idx) => [l.id, l]));
+const lineEntries = [];
+let encounteredCounter = 0;
 
-    for (const line of nearLines) {
-      const lid = line.layer;
-      if (typeof lid === "undefined" || lid === null) continue;
+for (const line of nearLines) {
+  const lid = line.layer;
+  if (typeof lid === "undefined" || lid === null) continue;
 
-      const origWeight = computeOriginalWeight(lid);
-      if (!origWeight) continue;
+  const origWeight = computeOriginalWeight(lid);
+  if (!origWeight) continue;
 
-      // layer color
-      const layerObj = layersArr.find(l => l.id === lid) || null;
-      const hex = layerObj && (layerObj.name || "").substring(0,7);
-      const rgb = this._hexToRgb(hex) || { r: 255, g: 255, b: 255 };
+  // color calculation (same as before)
+  const layerObj = layerById.get(lid) || null;
+  const hex = layerObj && (layerObj.name || "").substring(0,7);
+  const rgb = this._hexToRgb(hex) || { r: 255, g: 255, b: 255 };
+  const whiten = Math.max(0, Math.min(1, 1 - origWeight));
+  const blendToWhite = (component) => Math.round(component * (1 - whiten) + 255 * whiten);
+  const blendedR = blendToWhite(rgb.r);
+  const blendedG = blendToWhite(rgb.g);
+  const blendedB = blendToWhite(rgb.b);
+  const color = new Millions.Color(blendedR, blendedG, blendedB, 255);
 
-      // whiten factor = 1 - origWeight
-      const whiten = Math.max(0, Math.min(1, 1 - origWeight));
-      const blendToWhite = (component) => Math.round(component * (1 - whiten) + 255 * whiten);
-      const blendedR = blendToWhite(rgb.r);
-      const blendedG = blendToWhite(rgb.g);
-      const blendedB = blendToWhite(rgb.b);
+  let thickness = ((line.width && line.width > 0) ? line.width : 1) * 2;
+  const p1 = { x: line.p1.x, y: line.p1.y, colorA: color, colorB: color, thickness };
+  const p2 = { x: line.p2.x, y: line.p2.y, colorA: color, colorB: color, thickness };
 
-      // use full opaque alpha (255)
-      const color = new Millions.Color(blendedR, blendedG, blendedB, 255);
+  // layer order tie-breaker
+  const layerIdx = (typeof idToIndex.get(lid) === "number") ? idToIndex.get(lid) : 0;
 
-      // thickness doubled
-      const thickness = ((line.width && line.width > 0) ? line.width : 1) * 2;
+  // stable tie key: prefer numeric/string line.id if present, otherwise a deterministic encounteredCounter
+  const tieKey = (typeof line.id === "number" || typeof line.id === "string") ? String(line.id) : `__enc${encounteredCounter++}`;
 
-      const p1 = { x: line.p1.x, y: line.p1.y, colorA: color, colorB: color, thickness };
-      const p2 = { x: line.p2.x, y: line.p2.y, colorA: color, colorB: color, thickness };
-
-      const layerIdx = (typeof idToIndex.get(lid) === "number") ? idToIndex.get(lid) : 0;
-      const baseZ = layerIdx * 10000;
-      const zIndex = (visibleNow.get(lid) ? (VISIBLE_Z_OFFSET + baseZ) : baseZ) + ((typeof line.id !== "undefined" && line.id !== null) ? (line.id % 10000) : (entityIndex % 10000));
-
-      const lineEntity = new Millions.Line(p1, p2, 1, zIndex);
-      lineEntity.z = zIndex;
-      sceneEntities.push(lineEntity);
-      entityIndex += 1;
-    }
-
-    // sort and dispatch
-    sceneEntities.sort((a, b) => (a.z || 0) - (b.z || 0));
-    try {
-      store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities(sceneEntities) } });
-    } catch (err) {
-      console.warn("error setting renderer scene:", err);
-    }
-
-  } catch (err) {
-    console.warn("_onInvisStoreChange error", err);
-  }
+  lineEntries.push({ line, lid, layerIdx, whiten, p1, p2, thickness, color, tieKey });
 }
+
+// Comparator:
+// 1) whiten descending (more-white first so visible / less-white ends up with higher z)
+// 2) layerIdx ascending (lower layer index drawn earlier, higher index on top if same whiten)
+// 3) tieKey (line.id if available, otherwise encountered counter) to guarantee a total order
+const EPS = 1e-12;
+lineEntries.sort((a, b) => {
+  if (Math.abs(a.whiten - b.whiten) > EPS) return b.whiten - a.whiten; // more white first
+  if (a.layerIdx !== b.layerIdx) return a.layerIdx - b.layerIdx; // lower layer first
+  // try numeric compare when both look numeric
+  const an = Number(a.tieKey), bn = Number(b.tieKey);
+  const anIsNum = !Number.isNaN(an) && String(an) === a.tieKey;
+  const bnIsNum = !Number.isNaN(bn) && String(bn) === b.tieKey;
+  if (anIsNum && bnIsNum) return an - bn;
+  if (a.tieKey < b.tieKey) return -1;
+  if (a.tieKey > b.tieKey) return 1;
+  return 0;
+});
+
+if (this.state.oSelected) {
+        const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
+        if (selectToolState && selectToolState.selectedPoints) {
+          const allLines = window.Selectors.getSimulatorLines(store.getState());
+          function getLineIdsFromPoints(points) {
+            return new Set([...points].map(point => point >> 1));
+          }
+          let lineIds = [];
+          lineIds = [...getLineIdsFromPoints(selectToolState.selectedPoints)];
+          const matchingLines = allLines.filter(line => lineIds.includes(line.id));
+    const colorSel = new Millions.Color(0, 230, 255, 255);
+    let thickness = 0.8;
+for (let line of matchingLines) {
+  const p1 = { x: line.p1.x, y: line.p1.y, colorA: colorSel, colorB: colorSel, thickness };
+  const p2 = { x: line.p2.x, y: line.p2.y, colorA: colorSel, colorB: colorSel, thickness };
+  lineEntries.push({p1, p2});
+}
+}
+}
+// Now assign unique z indices based on the sorted order (guaranteed unique).
+const sceneEntities = [];
+for (let i = 0; i < lineEntries.length; ++i) {
+  const e = lineEntries[i];
+  const zIndex = i;
+
+  const lineEntity = new Millions.Line(e.p1, e.p2, 1, zIndex);
+  lineEntity.z = zIndex;
+  sceneEntities.push(lineEntity);
+}
+
+try {
+  store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities(sceneEntities) } });
+} catch (err) {
+  console.warn("error setting renderer scene:", err);
+}
+  }
 
 async commitAFrames() {
   const aLayers = Math.max(1, parseInt(this.state.aLayers, 10) || 1);
@@ -1418,7 +1621,7 @@ parseFolderLoopSettings(folderName) {
 
 // compose a folder name from base + settings
 buildFolderLoopName(baseName, settings) {
-  baseName = (baseName || "").trim() || "folder";
+  baseName = (baseName || "").trim() || "New Folder";
   const s = settings || {};
   if (!s.loopEnabled) return baseName;
 
@@ -1497,7 +1700,6 @@ scanForAnimatedFolders() {
     const children = layers.filter(l => l.folderId === folder.id);
     if (!children || children.length === 0) continue;
 
-    // normalize opts object to the older structure used by visible function
     const opts = {
       time: parsed.time,
       length: parsed.length,
@@ -1516,71 +1718,57 @@ scanForAnimatedFolders() {
 
   console.log("Found animated folders:", animatedFolders);
 
-  // Define visibility override for Line Rider
-  window.getLayerVisibleAtTime = (id, frame) => {
-    for (const folderObj of animatedFolders) {
-      const { opts, childLayerIds } = folderObj;
-      const indexInGroup = childLayerIds.indexOf(id);
-      if (indexInGroup === -1) continue;
+// Define visibility override for Line Rider
+window.getLayerVisibleAtTime = (id, frame) => {
+  for (const folderObj of animatedFolders) {
+    const { opts = {}, childLayerIds = [] } = folderObj;
+    const indexInGroup = childLayerIds.indexOf(id);
+    if (indexInGroup === -1) continue;
 
-      const groupLength = childLayerIds.length;
-      // safety: avoid divide by zero etc
-      if (groupLength <= 0) break;
+    const groupLength = childLayerIds.length;
+    if (groupLength <= 0) break;
 
-      // apply offset directly (can be negative)
-      const adjFrame = frame - (opts.offset || 0);
+    const adjFrame = frame - opts.offset;
+    let step = Math.floor(adjFrame / opts.time);
 
-      // compute step number (can be negative if adjFrame < 0)
-      let step = Math.floor(adjFrame / opts.time);
+    // number of steps in one cycle
+    const cycleSteps = Math.max(1, groupLength / gcd(groupLength, opts.jump));
 
-      // If loops is finite (>0) we need to limit the maximum allowed step
-      // compute number of steps that constitute one full cycle:
-      // when startIndex increments by jump each step, the number of steps
-      // until return to original is groupLength / gcd(groupLength, jump)
-      const cycleSteps = groupLength / gcd(groupLength, opts.jump);
+    const isFiniteLoops = !!opts.loops && opts.loops > 0;
+    if (isFiniteLoops) {
+      const maxSteps = opts.loops * cycleSteps;
+      if (step < 0) return false;
+      if ((step >= maxSteps) && opts.grow) return true;
+      if ((step >= maxSteps) && !opts.grow) return false;
+    }
 
-      if (opts.loops && opts.loops > 0) {
-        const maxSteps = opts.loops * cycleSteps;
-        // If step is negative, it is outside the forward looping window.
-        // For simplicity, treat negative step as "not visible" when loops>0.
-        if (step < 0) return false;
-        if (step >= maxSteps) return false;
-      }
+    // Map step into [0..cycleSteps-1] for indexing (works for negative too)
+    let wrappedStepForIndexing = ((step % cycleSteps) + cycleSteps) % cycleSteps;
 
-      // For negative step but infinite loops, map step into a positive domain for indexing
-      // so negative frames can wrap correctly for visibility decisions
-      let wrappedStepForIndexing = step;
-      if (wrappedStepForIndexing < 0) {
-        wrappedStepForIndexing = ((wrappedStepForIndexing % cycleSteps) + cycleSteps) % cycleSteps;
-      }
+    const startIndex = (wrappedStepForIndexing * opts.jump) % groupLength;
 
-      // compute starting index for this step (wrap modulo groupLength)
-      const startIndex = (wrappedStepForIndexing * opts.jump) % groupLength;
-
-      if (!opts.grow) {
-        // non-grow: show 'length' consecutive items starting at startIndex
-        for (let i = 0; i < opts.length; i++) {
-          const visibleIndex = (startIndex + i) % groupLength;
-          if (visibleIndex === indexInGroup) return true;
-        }
-        return false;
-      }
-
-      // grow mode: progressively reveal groups up to step*jump
-      // for finite loops we've already handled step >= maxSteps above
-      const maxI = wrappedStepForIndexing * opts.jump;
-      for (let i = 0; i <= maxI; i++) {
-        for (let j = 0; j < opts.length; j++) {
-          const visibleIndex = (i + j) % groupLength;
-          if (visibleIndex === indexInGroup) return true;
-        }
+    if (!opts.grow) {
+      // non-grow: show 'opts.length' consecutive items starting at startIndex
+      for (let i = 0; i < opts.length; i++) {
+        const visibleIndex = (startIndex + i) % groupLength;
+        if (visibleIndex === indexInGroup) return true;
       }
       return false;
     }
 
-    // not part of any animated folder: signal fallback so the renderer can handle default visibility
-    throw '__fallback_layer_render__';
-  };
+    // grow mode: progressively reveal groups up to wrappedStepForIndexing * opts.jump
+    const maxI = wrappedStepForIndexing * opts.jump;
+    for (let i = 0; i <= maxI; i++) {
+      for (let j = 0; j < opts.length; j++) {
+        const visibleIndex = (i + j) % groupLength;
+        if (visibleIndex === indexInGroup) return true;
+      }
+    }
+    return false;
+  }
+
+  throw '__fallback_layer_render__';
+};
 }
 
 // small hex -> rgb helper. accepts "#RRGGBB" or "RRGGBB"
@@ -1617,6 +1805,165 @@ disableOInvisFrames() {
   try {
     store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities([]) } });
   } catch (e) {
+  }
+}
+
+_incrementFolderName(name) {
+  const loopMatch = name.match(/(\.loop.*)$/i);
+  const loopPart = loopMatch ? loopMatch[1] : '';
+  const base = loopPart ? name.slice(0, name.length - loopPart.length) : name;
+
+  const digitMatch = base.match(/^(.*?)(\d+)$/);
+  if (digitMatch) {
+    const prefix = digitMatch[1];
+    const num = parseInt(digitMatch[2], 10);
+    return prefix + (num + 1) + loopPart;
+  } else {
+    return base + '2' + loopPart;
+  }
+}
+
+async copyFolderForActiveLayer(opts = {}) {
+  if (typeof opts === "boolean") opts = { copyLines: opts };
+  const { copyLines = true } = opts;
+
+  const getLayersArray = () => {
+    const s = store.getState();
+    return s?.simulator?.engine?.engine?.state?.layers?.toArray?.() || [];
+  };
+
+  try {
+    const activeInfo = this.getActiveLayer();
+    const { layers: simLayers, activeLayer, activeIndex } = activeInfo;
+
+    const folderLayerEntries = this.getFolderLayers();
+    const oldLayerIds = folderLayerEntries.map(e => e.layer.id);
+
+    const folderId = activeLayer.folderId;
+    const globalBefore = getLayersArray();
+    const folderLayerObj = globalBefore.find(l => String(l.id) === String(folderId));
+    const oldFolderName = (folderLayerObj && (folderLayerObj.name || folderLayerObj.title)) || (`folder_${folderId}`);
+    const newFolderName = this._incrementFolderName ? this._incrementFolderName(oldFolderName) : `${oldFolderName} (Copy)`;
+
+    const prevFolderIdx = globalBefore.findIndex(l => String(l.id) === String(folderId));
+    const beforeIds = new Set(globalBefore.map(l => String(l.id)));
+
+    // create folder
+    store.dispatch(addFolder(newFolderName));
+
+    // read fresh layers synchronously
+    let workingLayers = getLayersArray();
+    let createdFolder = workingLayers.find(l => !beforeIds.has(String(l.id)) && l.name === newFolderName) || workingLayers.find(l => l.name === newFolderName);
+
+    // if still not found, pick last created folder-like layer (best-effort)
+    if (!createdFolder) createdFolder = workingLayers[workingLayers.length - 1];
+
+    // prepare to create child layers (detect new items by comparing ids)
+    workingLayers = getLayersArray();
+    let seenIds = new Set(workingLayers.map(l => String(l.id)));
+
+    const idMap = {};
+    const newLayers = [];
+
+    for (let i = 0; i < oldLayerIds.length; ++i) {
+      const oldId = oldLayerIds[i];
+      const oldLayer = (simLayers || []).find(L => String(L.id) === String(oldId)) || workingLayers.find(L => String(L.id) === String(oldId));
+      const childName = oldLayer.name || "layer";
+
+      // create child
+      store.dispatch(addLayer(childName));
+
+      // read fresh layers immediately and pick the first new id we can find
+      workingLayers = getLayersArray();
+      const newIds = workingLayers.filter(l => !seenIds.has(String(l.id)));
+      let createdChild = newIds.find(l => l.name === childName) || newIds[0] || workingLayers[workingLayers.length - 1];
+
+      // update seenIds and mapping
+      seenIds = new Set(workingLayers.map(l => String(l.id)));
+      idMap[String(oldId)] = createdChild.id;
+      newLayers.push(createdChild);
+    }
+
+    // move children under the created folder (descending order)
+    workingLayers = getLayersArray();
+    const folderIdx = workingLayers.findIndex(l => String(l.id) === String(createdFolder.id));
+    const targetIndex = (folderIdx === -1) ? workingLayers.length : folderIdx;
+
+    for (let k = newLayers.length - 1; k >= 0; --k) {
+      store.dispatch(moveLayer(newLayers[k].id, targetIndex));
+    }
+
+    // refresh newLayers to latest engine objects
+    workingLayers = getLayersArray();
+    for (let idx = 0; idx < newLayers.length; ++idx) {
+      const nid = String(newLayers[idx].id);
+      const fresh = workingLayers.find(l => String(l.id) === nid);
+      if (fresh) newLayers[idx] = fresh;
+    }
+
+    // recompute createdFolderIdx and derive new active layer index
+    workingLayers = getLayersArray();
+    const createdFolderIdx = workingLayers.findIndex(l => String(l.id) === String(createdFolder.id));
+
+    let newActiveIndex;
+    if (typeof activeIndex === "number" && typeof prevFolderIdx === "number") {
+      newActiveIndex = (activeIndex - prevFolderIdx + createdFolderIdx);
+    } else {
+      newActiveIndex = workingLayers.findIndex(l => String(l.id) === String(newLayers[0]?.id));
+    }
+    if (newActiveIndex < 0) newActiveIndex = 0;
+    if (newActiveIndex >= workingLayers.length) newActiveIndex = workingLayers.length - 1;
+
+    const newActive = workingLayers[newActiveIndex];
+    if (newActive) store.dispatch(setLayerActive(newActive.id));
+
+    // copy lines (build minimal shape engine expects), then commit & revert afterward
+    if (copyLines) {
+      let allLines = store.getState().simulator.engine.engine.state.lines;
+      if (allLines && typeof allLines.toArray === "function") allLines = allLines.toArray();
+      allLines = allLines || [];
+
+      const clonedLines = [];
+      for (let oi = 0; oi < oldLayerIds.length; ++oi) {
+        const oldLayerId = oldLayerIds[oi];
+        const newLayerId = idMap[String(oldLayerId)];
+        if (!newLayerId) continue;
+
+        const linesForOld = allLines.filter(L => String(L.layer || L.layerId) === String(oldLayerId));
+        for (let j = 0; j < linesForOld.length; ++j) {
+          const orig = linesForOld[j];
+          const x1 = ('x1' in orig && orig.x1 != null) ? orig.x1 : (orig.p1 ? orig.p1.x : 0);
+          const y1 = ('y1' in orig && orig.y1 != null) ? orig.y1 : (orig.p1 ? orig.p1.y : 0);
+          const x2 = ('x2' in orig && orig.x2 != null) ? orig.x2 : (orig.p2 ? orig.p2.x : 0);
+          const y2 = ('y2' in orig && orig.y2 != null) ? orig.y2 : (orig.p2 ? orig.p2.y : 0);
+          const type = (typeof orig.type !== 'undefined' && orig.type !== null) ? orig.type : 2;
+          const width = (typeof orig.width !== 'undefined' && orig.width !== null) ? orig.width : 1;
+
+          const newLine = {
+            id: null,
+            layer: newLayerId,
+            type,
+            width,
+            x1,
+            y1,
+            x2,
+            y2
+          };
+
+          clonedLines.push(newLine);
+        }
+      }
+
+      if (clonedLines.length > 0) {
+        store.dispatch(addLines(clonedLines));
+      }
+    }
+    store.dispatch(commitTrackChanges());
+    store.dispatch(revertTrackChanges());
+
+    return { newFolderId: createdFolder.id, newFolderName: createdFolder.name, idMap, newLayers };
+  } catch (err) {
+    throw err;
   }
 }
 
@@ -1807,7 +2154,8 @@ this.renderSpacer(),
                 "div",
                 null,
                            e("button", { onClick: () => this.disableAutoLayerSync() }, "🟢 Auto Switch Layers ☑️"),
-                this.renderCheckbox("autoLock", "Auto Lock Layers"),
+                this.renderCheckbox("autoLock", "Auto-Lock Layers"),
+                this.renderCheckbox("autoLockActive", "Auto-Lock Active Animation Layer Only"),
 ),
 this.renderSpacer(),
             !this.state.oInvisFrames
@@ -1824,13 +2172,20 @@ this.renderSpacer(),
                 // this.renderCheckbox("oEndFrame", "End Frame Overlay"),
                 this.renderCheckbox("updateALot", "Update render a lot (laggy)"),
                 this.renderCheckbox("oPrevFrames", "Previous Frames Overlay"),
+                this.state.oPrevFrames
+                  && e(
+                  "div",
+                  null,
                 this.renderSlider("oFramesLength", { min: 1, max: 10, step: 1 }, "Previous Frames"),
+                this.renderCheckbox("oInverse", "Show Future Instead"),
+                  ),
                 this.renderSlider("opacity", { min: 0, max: 1, step: 0.01 }, "Opacity"),
+                this.renderCheckbox("oSelected", "Render Selected Lines"),
 ),
 this.renderSpacer(),
                   e("button", { onClick: () => { this.scanForAnimatedFolders();} }, "Update Layer Automation"),
               ),
-this.renderSection("folderSettings", "Layer Automation"),
+this.renderSection("folderSettings", "Animation Folder"),
 this.state.folderSettings
   && e("div", { style: this.sectionBox },
     (() => {
@@ -1862,10 +2217,12 @@ e("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
     return e("span", { style: { color: "#444", fontSize: "0.95em", userSelect: "none" } }, suffix);
   })()
 ),
-
+ e("div", null, e("button", { onClick: () => { this.copyFolderForActiveLayer(this.state.copyLines)} }, "📋 Copy Folder") ),
+            this.renderCheckbox("copyLines", "Copy Folder with Lines"),
 
  // Loop toggle and Grow toggle row
-               e("div", { style: { display: "flex", alignItems: "center", gap: "12px" } }, // Loop checkbox
+               e("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
+ // Loop checkbox
                e("label", { style: { display: "flex", alignItems: "center", gap: "6px" } }, e("input", { type: "checkbox", checked: !!parsed.loopEnabled, onChange: (ev) => { const s = { ...parsed, loopEnabled: !!ev.target.checked }; this.updateFolderLoopName(s); } }), e("span", null, "Loop") ),
 
  // Grow checkbox
@@ -1886,31 +2243,31 @@ this.copyLayerCount();
 }, "Copy # of Animated Layers"),
 
 e("div", { style: { display: "flex", flexDirection: "column", gap: "8px" } },
-  // Time (T) -> defaults to 1
+  // Time (T) -> default 1
   this.renderFolderSlider("Time", parsed.time, -20, 20, 1, 1, (newVal) => {
     const s = { ...parsed, time: newVal, loopEnabled: true };
     this.updateFolderLoopName(s);
   }),
 
-  // Length (L) -> defaults to 1, min 1
+  // Length (L) -> default 1, min 1
   this.renderFolderSlider("Length", parsed.length, 1, 200, 1, 1, (newVal) => {
     const s = { ...parsed, length: Math.max(1, newVal), loopEnabled: true };
     this.updateFolderLoopName(s);
   }),
 
-  // Frame Offset (F) -> defaults to 0
+  // Frame Offset (F) -> default 0
   this.renderFolderSlider("Frame Offset", parsed.frameOffset, -200, 200, 1, 0, (newVal) => {
     const s = { ...parsed, frameOffset: newVal, loopEnabled: true };
     this.updateFolderLoopName(s);
   }),
 
-  // Jump (J) -> defaults to 1, min 1
+  // Jump (J) -> default 1, min 1
   this.renderFolderSlider("Jump", parsed.jump, 1, 50, 1, 1, (newVal) => {
     const s = { ...parsed, jump: Math.max(1, newVal), loopEnabled: true };
     this.updateFolderLoopName(s);
   }),
 
-  // Loops (X) -> defaults to 0 (infinite), min 0
+  // Loops (X) -> default 0 (infinite), min 0
   this.renderFolderSlider("Loops", parsed.loops, 0, 50, 1, 0, (newVal) => {
     const s = { ...parsed, loops: Math.max(0, newVal), loopEnabled: true };
     this.updateFolderLoopName(s);
@@ -2019,14 +2376,15 @@ onClick: () => {
   }
 
   const targetIndexWithinFolder = frameIndex * num + folderIndex;
-  if (targetIndexWithinFolder >= 0 && targetIndexWithinFolder < folderLayers.length) {
-    const targetLayer = folderLayers[targetIndexWithinFolder].layer;
-    store.dispatch(setLayerActive(targetLayer.id));
-  } else {
-    // fallback to first frame in sequence if out of range
-    const fallback = this.getSequenceForFolderIndex(folderIndex, num)[0];
-    if (fallback) store.dispatch(setLayerActive(fallback.layer.id));
+let targetLayer = folderLayers[targetIndexWithinFolder].layer;
+  if (!(targetIndexWithinFolder >= 0 && targetIndexWithinFolder < folderLayers.length)) {
+    let targetLayer = this.getSequenceForFolderIndex(folderIndex, num)[0];
   }
+    store.dispatch(setLayerActive(targetLayer.id));
+if (this.state.autoLockActive) {
+    store.dispatch(setLayerEditable(activeLayerId, false));
+    store.dispatch(setLayerEditable(targetLayer.id, true));
+}
 }
 
           }, parsed.displayName)
@@ -2088,8 +2446,16 @@ e("div", null,
               && e(
                 "div",
                 { style: this.sectionBox },
-            this.renderSlider("aLength", { min: 0, max: 500, step: 1 }, "Animation Length"),
+            this.renderSlider("aLength", { min: 1, max: 500, step: 1 }, "Animation Length"),
             this.renderCheckbox("inverse", "Animate Backwards"),
+this.renderSpacer(),
+            this.renderCheckbox("editAnimation", "Edit Selected Animation"),
+            this.state.editAnimation
+              && e(
+                "div",
+                null,
+            this.renderSlider("animationOffset", { min: -20, max: 20, step: 1 }, "Layer Offset"),
+                  ),
 this.renderSpacer(),
             this.renderCheckbox("camLock", "Lock Animation to Camera"),
 this.renderSpacer(),
@@ -2160,6 +2526,17 @@ this.renderSpacer(),
                 this.renderCheckbox("rScaleWidth", "Scale Width"),
 this.renderSpacer(),
                 this.renderSlider("rRotate", { min: 0, max: 45, step: 0.1 }, "Max Rotation"),
+              ),
+            this.renderSection("performance", "Performance & Commit"),
+            this.state.performance
+              && e(
+                "div",
+                { style: this.sectionBox },
+                this.renderCheckbox("manualUpdateMode", "Manual Update [Press Enter]"),
+                this.renderSlider("maxUpdateTime", { min: 0, max: 100, step: 1 }, "Max Update Time"),
+this.renderSpacer(),
+                this.renderCheckbox("selectFinalFrameOnCommit", "Select Final Frame on Commit"),
+                this.renderCheckbox("resetALengthOnCommit", "Reset Animation Length on Commit"),
               ),
               ),
             e("button", { style: { float: "left" }, onClick: () => this.onCommit() }, "Commit"),
