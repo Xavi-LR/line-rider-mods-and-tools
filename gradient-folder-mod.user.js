@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi
 // @description  sets selected lines to active folder's layers in order by xy position or line id + recolors those layers to gradient thing
-// @version      0.1.1
+// @version      0.1.2
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -136,6 +136,8 @@ function main () {
                 topLayer: 0,
                 bottomLayer: 0,
                 skipUnchecked: false,
+                gammaCorrect: true,
+                gamma: 2.2,
                 directional: true,
                 angle: 0,
                 slice: false,
@@ -489,7 +491,7 @@ onChangeColor(color) {
   let layerIdx = 0;
   for (const layer of getSimulatorLayers) {
     layerIdx++;
-    if ((layerIdx >= this.state.bottomLayer && layerIdx <= this.state.topLayer) && (!this.state.skipUnchecked || layer.visible)) {
+    if ((layerIdx >= this.state.bottomLayer && layerIdx <= this.state.topLayer + 1) && (!this.state.skipUnchecked || layer.visible)) {
       totalColors++;
       layers.push(layer);
         }
@@ -501,24 +503,46 @@ onChangeColor(color) {
   let index = 0;
   for (const layer of layers) {
 
-    if (((layer.folderId === activeLayer.folderId) && this.state.useFolders) || (this.state.topLayer >= index && index >= this.state.bottomLayer && !this.state.useFolders)) {
-      if (this.state.gradient) {
+    if (((layer.folderId === activeLayer.folderId) && this.state.useFolders) || (this.state.topLayer + 1 >= index && index >= this.state.bottomLayer && !this.state.useFolders)) {
+if (this.state.gradient) {
+  const denom = Math.max(1, totalColors - 1);
+  const w = (colorIndex - 1) / denom;
+  const c1 = hexToRgb(this.state.animColor);
+  const c2 = hexToRgb(this.state.animColor2);
 
-        // compute weight and mix
-        const w = (colorIndex - 1) / (totalColors - 1);
-        const c1 = hexToRgb(this.state.animColor);
-        const c2 = hexToRgb(this.state.animColor2);
+  if (this.state.gammaCorrect) {
+    // gamma-corrected blend; google says:
+    // Gamma 2.2 for normal room brightness; Most PCs and Macs today (Standard)
+    // Gamma 2.4 for dim home theaters; Movies and TV (Rec.709)
+    // Gamma 2.6 for movie theaters; Digital cinemas (DCI-P3)
+    const gamma = this.state.gamma;
+    const invGamma = 1 / gamma;
 
-        const mixed = [
-          Math.round(c1[0] * (1 - w) + c2[0] * w),
-          Math.round(c1[1] * (1 - w) + c2[1] * w),
-          Math.round(c1[2] * (1 - w) + c2[2] * w)
-        ];
+    const mixed = [0, 1, 2].map(i => {
+      // raise stored value to gamma
+      const linear1 = Math.pow((c1[i] / 255), gamma);
+      const linear2 = Math.pow((c2[i] / 255), gamma);
 
-        layerColor = rgbToHex(...mixed);
+      // blend in linear space
+      const avgLinear = linear1 * (1 - w) + linear2 * w;
 
-        colorIndex++;
-      }
+      // convert back to gamma-compressed space
+      const val = Math.round(Math.pow(avgLinear, invGamma) * 255);
+
+      return Math.min(255, Math.max(0, val));
+    });
+    layerColor = rgbToHex(...mixed);
+  } else {
+    // without gamma correction
+    const mixed = [
+      Math.round(c1[0] * (1 - w) + c2[0] * w),
+      Math.round(c1[1] * (1 - w) + c2[1] * w),
+      Math.round(c1[2] * (1 - w) + c2[2] * w)
+    ];
+    layerColor = rgbToHex(...mixed);
+  }
+  colorIndex++;
+}
 
       store.dispatch(renameLayer(layer.id, layerColor + layer.name.substring(7)));
     }
@@ -709,13 +733,15 @@ this.setState({ bottomLayer: activeLayerIndex });
                 )
             ),
 
-            // Get Edge Colors, Skip Invisible Layers
+            // Get Edge Colors, Skip Invisible Layers, Gamma Correction
             e(
                 "div",
                 null,
                 e("button", { onClick: () => this.onGetColor() }, "Get Edge Colors")
             ),
             this.renderCheckbox('skipUnchecked', 'Skip Invisible Layers'),
+            this.renderCheckbox('gammaCorrect', 'Gamma-corrected Gradient'),
+            this.state.gammaCorrect && this.renderSlider("gamma", { min: 2.0, max: 2.6, step: 0.2 }, "Absolute Cinema Level (γ)"),
 
             // If gradient mode: secondary color picker
             this.state.gradient && e(
