@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi
 // @description  sets selected lines to active folder's layers in order by xy position or line id + recolors those layers to gradient thing
-// @version      0.1.0
+// @version      0.1.1
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -13,7 +13,6 @@
 // @downloadURL  http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/gradient-folder-mod.user.js
 // @updateURL    http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/gradient-folder-mod.user.js
 // @homepageURL  https://github.com/Xavi-LR/line-rider-mods-and-tools
-
 
 // @grant        none
 // ==/UserScript==
@@ -45,6 +44,7 @@ const getActiveTool = state => state.selectedTool;
 const getToolState = (state, toolId) => state.toolState[toolId];
 const getSelectToolState = state => getToolState(state, SELECT_TOOL);
 const getSimulatorCommittedTrack = state => state.simulator.committedEngine;
+const getLayers = state => state.simulator.engine.engine.state.layers.toArray();
 
 
 
@@ -131,7 +131,11 @@ function main () {
 
 
             this.defaults = {
-                // gradient: true, // setting the folder to one color could be useful idk
+                gradient: true,
+                useFolders: true,
+                topLayer: 0,
+                bottomLayer: 0,
+                skipUnchecked: false,
                 directional: true,
                 angle: 0,
                 slice: false,
@@ -142,6 +146,7 @@ function main () {
                 active: false,
                 animColor: "#000000",
                 animColor2: "#000000",
+                numLayers: getLayers(window.store.getState()).length,
             };
 
             this.mod = new GradientMod(store, this.state);
@@ -178,15 +183,31 @@ if (!this.state.dontUndo) {
 }
   this.setState({ dontUndo: false });
   this.track = getSimulatorCommittedTrack(store.getState());
-  const selectedLines = new Set([...selectedPoints]
-    .map(point => point >> 1)
-    .map(id => this.track.getLine(id))
-    .filter(l => l)
-  );
-  if (selectedLines.size === 0) return;
+let selectedLines = [...selectedPoints]
+  .map(point => point >> 1)
+  .map(id => this.track.getLine(id))
+  .filter(l => l);
 
-  const folderLayers = layers.filter(l => l.folderId === activeLayer.folderId);
+const layerById = new Map(layers.map(l => [String(l.id), l]));
+
+// folder layers (based on current layers / active layer)
+let folderLayers = layers.filter(l => l.folderId === activeLayer.folderId);
+if (folderLayers.length === 0) return;
+
+if (this.state.skipUnchecked) {
+  // keep only visible layers in the folder
+  folderLayers = folderLayers.filter(l => !!l.visible);
   if (folderLayers.length === 0) return;
+
+  // filter selected lines to those whose current layer is visible
+  selectedLines = selectedLines.filter(line => {
+    const layerObj = layerById.get(String(line.layer));
+    return !!layerObj && !!layerObj.visible;
+  });
+
+  if (selectedLines.length === 0) return;
+}
+
   const folderLength = folderLayers.length;
 
   const updatedLines = [];
@@ -413,20 +434,33 @@ onGetColor() {
   const activeLayerIndex = getSimulatorLayers.findIndex(layer => layer.id === activeLayerId);
   const activeLayer = getSimulatorLayers[activeLayerIndex];
 
-  let index = 1;
-  let firstIndex = true;
-  let finalIndex = 1;
-  for (const layer of getSimulatorLayers) {
-    if (layer.folderId === activeLayer.folderId) {
-    if (firstIndex) {
-      this.state.animColor = layer.name.substring(0, 7)
-      firstIndex = false;
-    }
-      finalIndex = index;
-    }
-        index++;
+if (this.state.useFolders) {
+  // collect folder layers in their original order
+  const folderLayers = getSimulatorLayers.filter(l => l.folderId === activeLayer.folderId);
+  if (folderLayers.length === 0) return;
+
+  // pick first layer (or the first visible one if skipUnchecked)
+  let firstPick = folderLayers[0];
+  if (this.state.skipUnchecked) {
+    const firstVisible = folderLayers.find(l => !!l.visible);
+    if (firstVisible) firstPick = firstVisible;
+    // if none visible, firstPick stays as the real first layer
   }
-      this.state.animColor2 = getSimulatorLayers[finalIndex - 1].name.substring(0, 7)
+
+  // pick last layer (or the last visible one if skipUnchecked)
+  let lastPick = folderLayers[folderLayers.length - 1];
+  if (this.state.skipUnchecked) {
+    const lastVisible = [...folderLayers].reverse().find(l => !!l.visible);
+    if (lastVisible) lastPick = lastVisible;
+    // if none visible, lastPick stays as the real last layer
+  }
+
+  this.setState({ animColor: (firstPick.name || '').substring(0, 7) });
+  this.setState({ animColor2: (lastPick.name || '').substring(0, 7) });
+} else {
+this.setState({ animColor: getSimulatorLayers[this.state.bottomLayer].name.substring(0, 7) });
+this.setState({ animColor2: getSimulatorLayers[this.state.topLayer].name.substring(0, 7) });
+}
 }
 
 
@@ -440,24 +474,38 @@ onChangeColor(color) {
   const activeLayer = getSimulatorLayers[activeLayerIndex];
 
   let layerColor = color;
+  let layers = [];
 
   // count how many layers are in the same folder as activeLayer
   let totalColors = 0;
+    if (this.state.useFolders) {
   for (const layer of getSimulatorLayers) {
-    if (layer.folderId === activeLayer.folderId) {
+    if ((layer.folderId === activeLayer.folderId) && (!this.state.skipUnchecked || layer.visible)) {
       totalColors++;
+      layers.push(layer);
     }
   }
+    } else {
+  let layerIdx = 0;
+  for (const layer of getSimulatorLayers) {
+    layerIdx++;
+    if ((layerIdx >= this.state.bottomLayer && layerIdx <= this.state.topLayer) && (!this.state.skipUnchecked || layer.visible)) {
+      totalColors++;
+      layers.push(layer);
+        }
+  }
+    }
 
   // assign gradient colors
-  let index = 1;
-  for (const layer of getSimulatorLayers) {
-    if (layer.folderId === activeLayer.folderId) {
+  let colorIndex = 1;
+  let index = 0;
+  for (const layer of layers) {
+
+    if (((layer.folderId === activeLayer.folderId) && this.state.useFolders) || (this.state.topLayer >= index && index >= this.state.bottomLayer && !this.state.useFolders)) {
       if (this.state.gradient) {
-        console.log(this.state.animColor, this.state.animColor2);
 
         // compute weight and mix
-        const w = (index - 1) / (totalColors - 1);
+        const w = (colorIndex - 1) / (totalColors - 1);
         const c1 = hexToRgb(this.state.animColor);
         const c2 = hexToRgb(this.state.animColor2);
 
@@ -469,14 +517,67 @@ onChangeColor(color) {
 
         layerColor = rgbToHex(...mixed);
 
-        index++;
+        colorIndex++;
       }
 
       store.dispatch(renameLayer(layer.id, layerColor + layer.name.substring(7)));
     }
+        index++;
   }
 
   store.dispatch(commitTrackChanges());
+}
+
+
+useLayerIndex(setTop, setBottom) {
+  const stateBefore = store.getState();
+  const getSimulatorLayers = stateBefore.simulator.engine.engine.state.layers.toArray();
+  const layerIdsBefore = new Set(getSimulatorLayers.map(layer => layer.id));
+
+  const activeLayerId = stateBefore.simulator.engine.engine.state.activeLayerId;
+  const activeLayerIndex = getSimulatorLayers.findIndex(layer => layer.id === activeLayerId);
+  const activeLayer = getSimulatorLayers[activeLayerIndex];
+
+  let index = 0;
+  let firstIndex = true;
+  let finalIndex = 0;
+  for (const layer of getSimulatorLayers) {
+    if (layer.folderId === activeLayer.folderId) {
+    if (firstIndex) {
+    if (setBottom) {
+this.setState({ bottomLayer: index });
+      firstIndex = false;
+    }
+    }
+      finalIndex = index;
+    }
+        index++;
+  }
+    if (setTop) {
+this.setState({ topLayer: finalIndex});
+    }
+
+this.setState({ useFolders: false });
+}
+useFolders() {
+this.setState({ useFolders: true });
+}
+
+onCopyActiveTop() {
+  const stateBefore = store.getState();
+  const getSimulatorLayers = stateBefore.simulator.engine.engine.state.layers.toArray();
+  const activeLayerId = stateBefore.simulator.engine.engine.state.activeLayerId;
+  const activeLayerIndex = getSimulatorLayers.findIndex(layer => layer.id === activeLayerId);
+
+this.setState({ topLayer: activeLayerIndex });
+}
+onCopyActiveBottom() {
+  const stateBefore = store.getState();
+  const getSimulatorLayers = stateBefore.simulator.engine.engine.state.layers.toArray();
+  const activeLayerId = stateBefore.simulator.engine.engine.state.activeLayerId;
+  const activeLayerIndex = getSimulatorLayers.findIndex(layer => layer.id === activeLayerId);
+
+this.setState({ bottomLayer: activeLayerIndex });
 }
 
         onReset (key) {
@@ -486,7 +587,6 @@ onChangeColor(color) {
         }
 
         onActivate () {
-console.log(this.state.active);
             if (this.state.active) {
                 this.setState({ active: false });
             } else {
@@ -534,44 +634,135 @@ console.log(this.state.active);
         }
 
         render () {
-            let tools = [];
-            if (this.state.active) {
+    this.sectionBox = {
+        border: "1px solid #ddd",
+        padding: "8px",
+        margin: "6px 0 12px 0",
+        borderRadius: "6px",
+        background: "#fafafa"
+    };
 
-                tools = [
-                    ...tools,
-                           e("button", { onClick: () => this.onGetColor() }, "Copy Active"),
-                           e("input", { type: "color", style: { width: "2em", marginRight: ".5em" }, value: this.state.animColor2, onChange: e => this.setState({ animColor2: e.target.value }) }),
-                           e("input", { type: "color", style: { width: "2em", marginRight: ".5em" }, value: this.state.animColor, onChange: e => this.setState({ animColor: e.target.value }) }),
-                           e("button", { onClick: () => this.onChangeColor(this.state.animColor) }, "Set Active"),
-                    this.renderCheckbox('directional', 'Directional'),
-                ];
-                    if (this.state.directional) {
-                        tools = [
-                            ...tools,
-                    this.renderSlider("angle", { min: -180, max: 180, step: 1 }, "Gradient Angle"),
-                    this.renderCheckbox('slice', 'Slice lines'),
-                        ];
-                    }
+    return e(
+        "div",
+        null,
+        this.state.active && e(
+            "div",
+            { style: this.sectionBox },
+            // Color Gradient checkbox
+            this.renderCheckbox('gradient', 'Color Gradient'),
 
-                tools = [
-                    ...tools,
-                           e("button", { onClick: () => this.setState({ dontUndo: true }) }, "Commit Slice"),
-                ];
-            }
-            return e("div",
-                     null,
-                     this.state.active && e("div", null, tools),
-                     e("button",
-                       {
+            // If using folders
+            this.state.useFolders && e(
+                "button",
+                { onClick: () => this.useLayerIndex(true, true) },
+                "🔲 Use Custom Top & Bottom ▲"
+            ),
+
+            // If not using folders: top/bottom controls
+            !this.state.useFolders && e(
+                "div",
+                null,
+                e("button", { onClick: () => this.useFolders() }, "☑️ Use Custom Top & Bottom ▼"),
+
+                e(
+                    "div",
+                    null,
+                    "Top Layer ",
+                    e("input", {
+                        style: { width: "4em" },
+                        type: "number",
+                        min: 0,
+                        max: this.state.numLayers,
+                        step: 1,
+                        value: this.state.topLayer,
+                        onChange: e => {
+                            const v = parseFloatOrDefault(e.target.value);
+                            if (0 <= v && v <= this.state.numLayers) {
+                                this.setState({ topLayer: v });
+                            }
+                        }
+                    }),
+                    e("button", { onClick: () => this.onCopyActiveTop() }, "Set ⬆️ from Active"),
+                    e("button", { onClick: () => this.useLayerIndex(true, false) }, "⟳")
+                ),
+
+                e(
+                    "div",
+                    null,
+                    "Bottom Layer ",
+                    e("input", {
+                        style: { width: "4em" },
+                        type: "number",
+                        min: 0,
+                        max: this.state.numLayers,
+                        step: 1,
+                        value: this.state.bottomLayer,
+                        onChange: e => {
+                            const v = parseFloatOrDefault(e.target.value);
+                            if (0 <= v && v <= this.state.numLayers) {
+                                this.setState({ bottomLayer: v });
+                            }
+                        }
+                    }),
+                    e("button", { onClick: () => this.onCopyActiveBottom() }, "Set ⬇️ from Active"),
+                    e("button", { onClick: () => this.useLayerIndex(false, true) }, "⟳")
+                )
+            ),
+
+            // Get Edge Colors, Skip Invisible Layers
+            e(
+                "div",
+                null,
+                e("button", { onClick: () => this.onGetColor() }, "Get Edge Colors")
+            ),
+            this.renderCheckbox('skipUnchecked', 'Skip Invisible Layers'),
+
+            // If gradient mode: secondary color picker
+            this.state.gradient && e(
+                "input",
+                {
+                    type: "color",
+                    style: { width: "2em", marginRight: ".5em" },
+                    value: this.state.animColor2,
+                    onChange: e => this.setState({ animColor2: e.target.value })
+                }
+            ),
+
+            // primary color picker, set gradient, directional checkbox
+            e("input", {
+                type: "color",
+                style: { width: "2em", marginRight: ".5em" },
+                value: this.state.animColor,
+                onChange: e => this.setState({ animColor: e.target.value })
+            }),
+            e("button", { onClick: () => this.onChangeColor(this.state.animColor) }, "Set Gradient"),
+            this.renderCheckbox('directional', 'Directional'),
+
+            // directional extras
+            this.state.directional && e(
+                "div",
+                null,
+                this.renderSlider("angle", { min: -180, max: 180, step: 1 }, "Gradient Angle"),
+                this.renderCheckbox('slice', 'Slice lines')
+            ),
+
+            // Commit Slice button
+            e("button", { onClick: () => this.setState({ dontUndo: true }) }, "Commit Slice")
+        ),
+
+        // Activation button
+        e(
+            "button",
+            {
                 style: {
                     backgroundColor: this.state.active ? "lightblue" : null
                 },
                 onClick: this.onActivate.bind(this)
             },
-                       "Folder Gradient Select Mod"
-                      )
-                    );
-        }
+            "Folder Gradient Select Mod"
+        )
+    );
+}
   }
 
   window.registerCustomSetting(GradientSelectModComponent);
