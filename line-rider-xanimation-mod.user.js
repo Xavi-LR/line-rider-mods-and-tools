@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      2.0.3
+// @version      2.0.4
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -637,7 +637,7 @@ if (this.state.rScaleY !== 1 && notFreeze) {
 
     active () {
         return this.state.active && this.selectedPoints.size > 0 && (
-            (this.state.aLength !== 1 && !this.state.includeFirstFrame) || (this.state.aLength !== 0 && this.state.includeFirstFrame)
+            this.state.aLength !== 1
         );
     }
 
@@ -1447,7 +1447,7 @@ if (this.state.oSelected) {
           lineIds = [...getLineIdsFromPoints(selectToolState.selectedPoints)];
           const matchingLines = allLines.filter(line => lineIds.includes(line.id));
     const colorSel = new Millions.Color(0, 230, 255, 255);
-    let thickness = 0.8;
+    let thickness = 0.5;
 for (let line of matchingLines) {
   const p1 = { x: line.p1.x, y: line.p1.y, colorA: colorSel, colorB: colorSel, thickness };
   const p2 = { x: line.p2.x, y: line.p2.y, colorA: colorSel, colorB: colorSel, thickness };
