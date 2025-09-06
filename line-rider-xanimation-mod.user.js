@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      2.0.4
+// @version      2.0.5
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -1307,8 +1307,9 @@ _onStoreFrameChange() {
 }
 
 _onInvisStoreChange(opts = {}) {
-    const force = !!(opts && opts.force);
+  const force = !!(opts && opts.force);
 
+  const schedule = () => {
     // if not forced and feature disabled, do nothing
     if (!force && !this.state.oInvisFrames) return;
 
@@ -1382,96 +1383,103 @@ _onInvisStoreChange(opts = {}) {
       return 0;
     };
 
-// --- build a list of entries to sort deterministically, then assign unique z per sorted index ---
-const layerById = new Map(layersArr.map((l, idx) => [l.id, l]));
-const lineEntries = [];
-let encounteredCounter = 0;
+    // --- build a list of entries to sort deterministically, then assign unique z per sorted index ---
+    const layerById = new Map(layersArr.map((l, idx) => [l.id, l]));
+    const lineEntries = [];
+    let encounteredCounter = 0;
 
-for (const line of nearLines) {
-  const lid = line.layer;
-  if (typeof lid === "undefined" || lid === null) continue;
+    for (const line of nearLines) {
+      const lid = line.layer;
+      if (typeof lid === "undefined" || lid === null) continue;
 
-  const origWeight = computeOriginalWeight(lid);
-  if (!origWeight) continue;
+      const origWeight = computeOriginalWeight(lid);
+      if (!origWeight) continue;
 
-  // color calculation (same as before)
-  const layerObj = layerById.get(lid) || null;
-  const hex = layerObj && (layerObj.name || "").substring(0,7);
-  const rgb = this._hexToRgb(hex) || { r: 255, g: 255, b: 255 };
-  const whiten = Math.max(0, Math.min(1, 1 - origWeight));
-  const blendToWhite = (component) => Math.round(component * (1 - whiten) + 255 * whiten);
-  const blendedR = blendToWhite(rgb.r);
-  const blendedG = blendToWhite(rgb.g);
-  const blendedB = blendToWhite(rgb.b);
-  const color = new Millions.Color(blendedR, blendedG, blendedB, 255);
+      // color calculation (same as before)
+      const layerObj = layerById.get(lid) || null;
+      const hex = layerObj && (layerObj.name || "").substring(0,7);
+      const rgb = this._hexToRgb(hex) || { r: 255, g: 255, b: 255 };
+      const whiten = Math.max(0, Math.min(1, 1 - origWeight));
+      const blendToWhite = (component) => Math.round(component * (1 - whiten) + 255 * whiten);
+      const blendedR = blendToWhite(rgb.r);
+      const blendedG = blendToWhite(rgb.g);
+      const blendedB = blendToWhite(rgb.b);
+      const color = new Millions.Color(blendedR, blendedG, blendedB, 255);
 
-  let thickness = ((line.width && line.width > 0) ? line.width : 1) * 2;
-  const p1 = { x: line.p1.x, y: line.p1.y, colorA: color, colorB: color, thickness };
-  const p2 = { x: line.p2.x, y: line.p2.y, colorA: color, colorB: color, thickness };
+      let thickness = ((line.width && line.width > 0) ? line.width : 1) * 2;
+      const p1 = { x: line.p1.x, y: line.p1.y, colorA: color, colorB: color, thickness };
+      const p2 = { x: line.p2.x, y: line.p2.y, colorA: color, colorB: color, thickness };
 
-  // layer order tie-breaker
-  const layerIdx = (typeof idToIndex.get(lid) === "number") ? idToIndex.get(lid) : 0;
+      // layer order tie-breaker
+      const layerIdx = (typeof idToIndex.get(lid) === "number") ? idToIndex.get(lid) : 0;
 
-  // stable tie key: prefer numeric/string line.id if present, otherwise a deterministic encounteredCounter
-  const tieKey = (typeof line.id === "number" || typeof line.id === "string") ? String(line.id) : `__enc${encounteredCounter++}`;
+      // stable tie key: prefer numeric/string line.id if present, otherwise a deterministic encounteredCounter
+      const tieKey = (typeof line.id === "number" || typeof line.id === "string") ? String(line.id) : `__enc${encounteredCounter++}`;
 
-  lineEntries.push({ line, lid, layerIdx, whiten, p1, p2, thickness, color, tieKey });
-}
+      lineEntries.push({ line, lid, layerIdx, whiten, p1, p2, thickness, color, tieKey });
+    }
 
-// Comparator:
-// 1) whiten descending (more-white first so visible / less-white ends up with higher z)
-// 2) layerIdx ascending (lower layer index drawn earlier, higher index on top if same whiten)
-// 3) tieKey (line.id if available, otherwise encountered counter) to guarantee a total order
-const EPS = 1e-12;
-lineEntries.sort((a, b) => {
-  if (Math.abs(a.whiten - b.whiten) > EPS) return b.whiten - a.whiten; // more white first
-  if (a.layerIdx !== b.layerIdx) return a.layerIdx - b.layerIdx; // lower layer first
-  // try numeric compare when both look numeric
-  const an = Number(a.tieKey), bn = Number(b.tieKey);
-  const anIsNum = !Number.isNaN(an) && String(an) === a.tieKey;
-  const bnIsNum = !Number.isNaN(bn) && String(bn) === b.tieKey;
-  if (anIsNum && bnIsNum) return an - bn;
-  if (a.tieKey < b.tieKey) return -1;
-  if (a.tieKey > b.tieKey) return 1;
-  return 0;
-});
+    // Comparator:
+    // 1) whiten descending (more-white first so visible / less-white ends up with higher z)
+    // 2) layerIdx ascending (lower layer index drawn earlier, higher index on top if same whiten)
+    // 3) tieKey (line.id if available, otherwise encountered counter) to guarantee a total order
+    const EPS = 1e-12;
+    lineEntries.sort((a, b) => {
+      if (Math.abs(a.whiten - b.whiten) > EPS) return b.whiten - a.whiten; // more white first
+      if (a.layerIdx !== b.layerIdx) return a.layerIdx - b.layerIdx; // lower layer first
+      // try numeric compare when both look numeric
+      const an = Number(a.tieKey), bn = Number(b.tieKey);
+      const anIsNum = !Number.isNaN(an) && String(an) === a.tieKey;
+      const bnIsNum = !Number.isNaN(bn) && String(bn) === b.tieKey;
+      if (anIsNum && bnIsNum) return an - bn;
+      if (a.tieKey < b.tieKey) return -1;
+      if (a.tieKey > b.tieKey) return 1;
+      return 0;
+    });
 
-if (this.state.oSelected) {
-        const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
-        if (selectToolState && selectToolState.selectedPoints) {
-          const allLines = window.Selectors.getSimulatorLines(store.getState());
-          function getLineIdsFromPoints(points) {
-            return new Set([...points].map(point => point >> 1));
-          }
-          let lineIds = [];
-          lineIds = [...getLineIdsFromPoints(selectToolState.selectedPoints)];
-          const matchingLines = allLines.filter(line => lineIds.includes(line.id));
-    const colorSel = new Millions.Color(0, 230, 255, 255);
-    let thickness = 0.5;
-for (let line of matchingLines) {
-  const p1 = { x: line.p1.x, y: line.p1.y, colorA: colorSel, colorB: colorSel, thickness };
-  const p2 = { x: line.p2.x, y: line.p2.y, colorA: colorSel, colorB: colorSel, thickness };
-  lineEntries.push({p1, p2});
-}
-}
-}
-// Now assign unique z indices based on the sorted order (guaranteed unique).
-const sceneEntities = [];
-for (let i = 0; i < lineEntries.length; ++i) {
-  const e = lineEntries[i];
-  const zIndex = i;
+    if (this.state.oSelected) {
+      const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
+      if (selectToolState && selectToolState.selectedPoints) {
+        const allLines = window.Selectors.getSimulatorLines(store.getState());
+        function getLineIdsFromPoints(points) {
+          return new Set([...points].map(point => point >> 1));
+        }
+        let lineIds = [];
+        lineIds = [...getLineIdsFromPoints(selectToolState.selectedPoints)];
+        const matchingLines = allLines.filter(line => lineIds.includes(line.id));
+        const colorSel = new Millions.Color(0, 230, 255, 255);
+        let thickness = 0.5;
+        for (let line of matchingLines) {
+          const p1 = { x: line.p1.x, y: line.p1.y, colorA: colorSel, colorB: colorSel, thickness };
+          const p2 = { x: line.p2.x, y: line.p2.y, colorA: colorSel, colorB: colorSel, thickness };
+          lineEntries.push({p1, p2});
+        }
+      }
+    }
 
-  const lineEntity = new Millions.Line(e.p1, e.p2, 1, zIndex);
-  lineEntity.z = zIndex;
-  sceneEntities.push(lineEntity);
-}
+    // Now assign unique z indices based on the sorted order (guaranteed unique).
+    const sceneEntities = [];
+    for (let i = 0; i < lineEntries.length; ++i) {
+      const e = lineEntries[i];
+      const zIndex = i;
+      const lineEntity = new Millions.Line(e.p1, e.p2, 1, zIndex);
+      lineEntity.z = zIndex;
+      sceneEntities.push(lineEntity);
+    }
 
-try {
-  store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities(sceneEntities) } });
-} catch (err) {
-  console.warn("error setting renderer scene:", err);
-}
+    try {
+      store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities(sceneEntities) } });
+    } catch (err) {
+      console.warn("error setting renderer scene:", err);
+    }
+  }; // end schedule()
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(schedule);
+  } else {
+    setTimeout(schedule, 0);
   }
+}
+
 
 async commitAFrames() {
   const aLayers = Math.max(1, parseInt(this.state.aLayers, 10) || 1);
