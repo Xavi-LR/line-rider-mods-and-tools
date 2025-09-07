@@ -2,8 +2,8 @@
 // @name         Fill Tool
 // @namespace    https://www.linerider.com/
 // @author       Xavi
-// @description  fixes layer slider & adds back goofy patch for select render
-// @version      0.2.2
+// @description  better ui
+// @version      0.2.3
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -370,7 +370,7 @@ await delay(1);
         linesToRemove: null, // oldOutlineLines,
         linesToAdd: [...bridgeLines, ...outlineLines, ...previewLines]
       },
-      meta: { name: 'Click Fill' }
+      meta: { name: 'SET_LINES' }
     });
 
 
@@ -764,56 +764,26 @@ await delay(1);
       };
 
       renderHeader(title) {
-        return e('h3', {
+        return e("div", {
           style: {
             textAlign: 'center',
-            fontSize: '1.2em',
-            fontWeight: 'bold',
-            margin: '0.5em 0',
-            paddingBottom: '0.25em',
-            borderBottom: '2px solid gray',
-            paddingTop: '0.25em',
-            borderTop: '2px solid gray',
+            borderBottom: '2px solid #ddd',
           }
         }, title);
       }
 
-      // headers with stolen trans mod collapse button thing
-      renderSection(key, title) {
-        return e('div', {
-          style: {
-            textAlign: 'center',
-            margin: '0.5em 0',
-            padding: '0.25em 0',
-            borderTop: '2px solid gray',
-            borderBottom: '2px solid gray',
-          }
-        }, [
-          e('div', {
-            style: {
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              gap: '0.5em',
-              fontWeight: 'bold',
-              fontSize: '1.2em',
-            }
-          }, [
-            e('span', null, title),
-            e('button', {
-              id: key,
-              style: {
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: '1em',
-                padding: 0,
-              },
-              onClick: () => this.setState({ [key]: !this.state[key] })
-            }, this.state[key] ? '▲' : '▼')
-          ])
-        ]);
-      }
+    renderSection(key, title) {
+      return e(
+        "div",
+          {style: {textAlign: 'center', borderBottom: '2px solid #ddd'}},
+        e("button", {
+          id: key,
+          style: { background: "none", border: "none" },
+          onClick: () => this.setState({ [key]: !this.state[key] }),
+        }, this.state[key] ? "▲" : "▼"),
+        e("label", { for: key }, title),
+      );
+    }
 
 
       renderSlider(key, label, { min, max, step }) {
@@ -834,9 +804,7 @@ await delay(1);
           e('div', {
             style: { display: 'flex', alignItems: 'center', gap: '0.5em' }
           }, [
-            e('label', {
-              style: { minWidth: '6em', fontWeight: 'bold' }
-            }, `${label}:`),
+            e('label', null, `${label}:`),
 
             e('input', {
               type: inputType,
@@ -960,6 +928,13 @@ await delay(1);
       }
 
       render() {
+this.sectionBox = {
+  border: "1px solid #ddd",
+  padding: "8px",
+  margin: "6px 0 12px 0",
+  borderRadius: "6px",
+  background: "#fafafa"
+};
         this.state.numLayers = getSimulatorLayers(window.store.getState()).length;
         return e("div", null, [
 
@@ -977,7 +952,7 @@ await delay(1);
           this.state.layers &&
           e(
             'div',
-            null,
+            { style: this.sectionBox },
             this.renderSlider('fillLayer', 'Fill Layer', { min: -1, max: this.state.numLayers - 1, step: 1 }),
             this.renderSlider('outlineLayer', 'Outline Layer', { min: -2, max: this.state.numLayers - 1, step: 1 }),
           ),
@@ -987,7 +962,7 @@ await delay(1);
           this.state.style &&
           e(
             'div',
-            null,
+            { style: this.sectionBox },
             this.renderSlider('spacing', 'Spacing', { min: -0.05, max: 10, step: 0.01 }),
             this.renderSlider('angle', 'Rotation', { min: 0, max: 360, step: 1 }),
             this.renderSlider('offset', 'Offset', { min: 0, max: 1, step: 0.01 }),
@@ -999,7 +974,7 @@ await delay(1);
           this.state.selection &&
           e(
             'div',
-            null,
+            { style: this.sectionBox },
             this.renderSlider('tolerance', 'Tolerance', { min: 0, max: 10, step: 0.1 }),
             this.renderToggle('intersections', '🐞Intersections'),
             this.renderSlider('shapes', 'Shapes', { min: 1, max: 20, step: 1 }),
@@ -1009,8 +984,8 @@ await delay(1);
           this.state.advanced &&
           e(
             'div',
-            null,
-            this.renderToggle('prioritizeConnected', '🐞Prioritize Connected'),
+            { style: this.sectionBox },
+            this.renderToggle('prioritizeConnected', 'Prioritize Connected'),
             this.renderToggle('bridgeToler', 'Bridge Tolerance'),
             this.renderToggle('bridgeInter', '🐞Bridge Intersections'),
             this.renderSlider('minLines', 'Min Lines', { min: 0, max: 50, step: 1 }),
