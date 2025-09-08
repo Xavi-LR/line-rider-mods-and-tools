@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       David Lu, Ethan Li, Tobias Bessler, & Xavi Lundberg
 // @description  Adds ability to transform selections
-// @version      0.8.7
+// @version      0.8.8
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -645,40 +645,26 @@ function main() {
 
 
             if (!this._docListenersInstalled) {
-                // helper: convert ev.buttons to a single button value (right=2,left=0,middle=1)
                 const _computeButton = (ev) => {
-                    // buttons bitmask: left=1, right=2, middle=4
-                    if (ev.buttons & 2) return 2;       // right pressed
-                    if (ev.buttons & 1) return 0;       // left pressed
-                    if (ev.buttons & 4) return 1;       // middle pressed
+                    if (ev.buttons & 2) return 2;
+                    if (ev.buttons & 1) return 0;
+                    if (ev.buttons & 4) return 1;
                     return typeof ev.button === "number" ? ev.button : -1;
                 };
-
-                // helper: convert native pointer event to the {x,y} pos shape your code expects.
                 this._eventToPos = (ev) => {
-                    // try canvas-relative (adjust selector if your editor element is different)
                     const canvas = document.querySelector("canvas");
                     if (canvas) {
                         const r = canvas.getBoundingClientRect();
                         return { x: ev.clientX - r.left, y: ev.clientY - r.top };
                     }
-                    // fallback: client coords
                     return { x: ev.clientX, y: ev.clientY };
                 };
-
-                // pointerdown handler (capture phase)
                 this._onDocPointerDown = (ev) => {
-                    // build fake and call existing handler
                     const fakeDown = { button: _computeButton(ev), pos: this._eventToPos(ev), _originalEvent: ev};
                     try { this.onPointerDown(fakeDown); } catch (err) { console.error(err); }
-
-                    // start tracking drag for this pointer
                     this._draggingPointerId = ev.pointerId;
-
-                    // attach move/up handlers (only once)
                     if (!this._onDocPointerMove) {
                         this._onDocPointerMove = (mev) => {
-                            // ignore other pointers
                             if (this._draggingPointerId != null && mev.pointerId !== this._draggingPointerId) return;
 
                             const fakeMove = { button: _computeButton(mev), pos: this._eventToPos(mev), _originalEvent: mev, alt: isAltDown, ctrl: isCtrlDown, shift: isShiftDown};
@@ -688,15 +674,12 @@ function main() {
                         };
 
                         this._onDocPointerUp = (uev) => {
-                            // ignore other pointers
                             if (this._draggingPointerId != null && uev.pointerId !== this._draggingPointerId) return;
 
                             const fakeUp = { button: _computeButton(uev), pos: this._eventToPos(uev), _originalEvent: uev };
                             try {
                                 if (typeof this.onPointerUp === "function") this.onPointerUp(fakeUp);
                             } catch (err) { console.error(err); }
-
-                            // cleanup dragging state (pointer finished)
                             this._draggingPointerId = null;
                         };
 
@@ -705,13 +688,7 @@ function main() {
                     }
                 };
 
-                // optionally suppress context menu on right-click if you want
-                this._onDocContext = (ev) => {
-                    if (ev.button === 2) ev.preventDefault();
-                };
-
                 document.addEventListener("pointerdown", this._onDocPointerDown, true);
-                document.addEventListener("contextmenu", this._onDocContext, true);
 
                 this._docListenersInstalled = true;
 
@@ -786,10 +763,9 @@ function main() {
                     }
                     if (e.shift) {
                         // scale both ways equally
-                        let scale = Math.min(scaleX, scaleY);
                         if (Number.isFinite(scaleX) && Number.isFinite(scaleY)) {
-                            if (scale !== 0) {
-                                this.setState({ scale: scale });
+                            if (scaleX !== 0) {
+                                this.setState({ scale: scaleX });
                             }
                         } else if (!Number.isFinite(scaleY) && scaleX !== 0) {
                             this.setState({ scaleX: scaleX });
@@ -809,7 +785,6 @@ function main() {
             }
         }
         onPointerUp(e) {
-            // const pos = DefaultTool.prototype.toTrackPos.call(this._toolCtx, e.pos);
             if (this.state.activePoint) {
                 this.state.activePoint = false;
                 this.mod.commit();
