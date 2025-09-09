@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       David Lu, Ethan Li, Tobias Bessler, & Xavi Lundberg
 // @description  Adds ability to transform selections
-// @version      0.8.8
+// @version      0.9.0
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -25,7 +25,10 @@
 const SELECT_TOOL = "SELECT_TOOL";
 const EMPTY_SET = new Set();
 const LINE_WIDTH = 2;
-const POINT_RADIUS = 60;
+const POINT_RADIUS = 60; // click detection radius
+const POINT_SIZE = 10;
+const SCALE_POINT_OFFSET = 30;
+const SCALE_MAX = 3;
 
 /* actions */
 const setTool = (tool) => ({
@@ -489,7 +492,6 @@ class TransformMod {
             perspY = 0.01 * perspY;
         }
         const perspSafety = Math.pow(10, this.state.perspClamping);
-        let minX, minY, maxX, maxY;
         for (const line of postBox) {
             const p1 = restorePoint(
                 transformPersp(
@@ -524,33 +526,70 @@ class TransformMod {
         }
 
         // get transform point locations
-        minX = postBox[0].p1.x;
-        minY = postBox[0].p1.y;
-        maxX = postBox[1].p2.x;
-        maxY = postBox[1].p2.y;
-        const midX = (minX + maxX) / 2;
-        const midY = (minY + maxY) / 2;
-        this.state.points = [ // each opposite point id is +/- 4
-            { id: 0, x: minX, y: minY }, // TL
-            { id: 1, x: midX, y: minY }, // TM
-            { id: 2, x: maxX, y: minY }, // TR
-            { id: 3, x: maxX, y: midY }, // MR
-            { id: 4, x: maxX, y: maxY }, // BR
-            { id: 5, x: midX, y: maxY }, // BM
-            { id: 6, x: minX, y: maxY }, // BL
-            { id: 7, x: minX, y: midY }, // ML
-            { id: 8, x: midX, y: minY - 100 / zoom }, // Rotate
+        const p = this.state.activePoint;
+        const o = SCALE_POINT_OFFSET / (zoom);
+
+        // corner coords without offsets
+        const tlX0 = postBox[0].p1.x;
+        const tlY0 = postBox[0].p1.y;
+        const trX0 = postBox[3].p2.x;
+        const trY0 = postBox[3].p2.y;
+        const brX0 = postBox[1].p2.x;
+        const brY0 = postBox[1].p2.y;
+        const blX0 = postBox[0].p2.x;
+        const blY0 = postBox[0].p2.y;
+
+        // middle coords
+        const midX = (tlX0 + brX0) / 2;
+        const midY = (tlY0 + brY0) / 2;
+        const tmX = (tlX0 + trX0) / 2;
+        const tmY = (tlY0 + trY0) / 2;
+        const mrX = (brX0 + trX0) / 2;
+        const mrY = (brY0 + trY0) / 2;
+        const bmX = (brX0 + blX0) / 2;
+        const bmY = (brY0 + blY0) / 2;
+        const mlX = (tlX0 + blX0) / 2;
+        const mlY = (tlY0 + blY0) / 2;
+
+        // apply offset if no point is selected or if that point is selected
+        const apply = (id) => (!p || p.id === id);
+
+        this.state.points = [
+            { id: 0, x: tlX0 + (apply(0) ? -o : 0), y: tlY0 + (apply(0) ? -o : 0), xo: -o, yo: -o }, // TL
+            { id: 1, x: tmX, y: tmY + (apply(1) ? -o : 0), xo: 0, yo: -o }, // TM
+            { id: 2, x: trX0 + (apply(2) ? o : 0), y: trY0 + (apply(2) ? -o : 0), xo: o, yo: -o }, // TR
+            { id: 3, x: mrX + (apply(3) ? o : 0), y: mrY, xo: o, yo: 0 }, // MR
+            { id: 4, x: brX0 + (apply(4) ? o : 0), y: brY0 + (apply(4) ? o : 0), xo: o, yo: o }, // BR
+            { id: 5, x: bmX, y: bmY + (apply(5) ? o : 0), xo: 0, yo: o }, // BM
+            { id: 6, x: blX0 + (apply(6) ? -o : 0), y: blY0 + (apply(6) ? o : 0), xo: -o, yo: o }, // BL
+            { id: 7, x: mlX + (apply(7) ? -o : 0), y: mlY, xo: -o, yo: 0 }, // ML
         ];
+
+        if (this.state.activePoint?.id !== 8) {
+            this.state.points.push({ id: 8, x: midX, y: Math.min(tlY0, blY0) - 100 / zoom }); // Rotate default location
+        } else {
+            this.state.points.push(this.state.activePoint); // Rotate active
+        }
+
+        if (this.state.warpTools) {
+            if (this.state.activePoint?.id !== 9) {
+                this.state.points.push({ id: 9, x: midX, y: midY }); // Perspective
+            } else {
+                this.state.points.push(this.state.activePoint); // Perspective active
+            }
+            if (this.state.activePoint?.id !== 10) {
+                this.state.points.push({ id: 10, x: tlX0 - 80 / zoom, y: tlY0 - 80 / zoom }); // Skew
+            } else {
+                this.state.points.push(this.state.activePoint); // Skew active
+            }
+        }
+
         this.state.midpoint = { x: midX, y: midY };
-
-        const pointBoxes = genBoundingBoxPoints(this.state.points, 10 / zoom, 1 / zoom, new Millions.Color(0, 0, 0, 255), 1);
-
-
-        const boxes = this.state.advancedTools ? [...preBox, ...postBox, ...pointBoxes] : [...postBox, ...pointBoxes]; // i dont think advancedTools is even a thing anymore but whatever
+        const pointBoxes = genBoundingBoxPoints(this.state.points, POINT_SIZE / zoom, 1 / zoom, new Millions.Color(64, 128, 255, 255), 1);
+        const boxes = this.state.advancedTools ? [...preBox, ...postBox, ...pointBoxes] : [...postBox, ...pointBoxes];
         this.store.dispatch(setEditScene(Millions.Scene.fromEntities(boxes)));
     }
 }
-
 function main() {
     const {
         React,
@@ -726,8 +765,10 @@ function main() {
         onPointerDrag(e) {
             if (this.state.activePoint) {
                 const pos = DefaultTool.prototype.toTrackPos.call(this._toolCtx, e.pos);
-                let p = this.state.activePoint;
-                let mp = this.state.midpoint;
+                const p = this.state.activePoint;
+                const mp = this.state.midpoint;
+                const pts = this.state.points;
+                const zoom = getEditorZoom(store.getState());
                 if (e.button === 0) {
                     if (p.id == 8) {
                         // rotation
@@ -736,25 +777,66 @@ function main() {
 
                         let rotate = angleDeg;
                         if(e.ctrl) {
-                        // angle lock
+                            // angle lock
                             rotate = (Math.round(rotate/15)) * 15;
                         }
+                        this.state.activePoint = { id: 8, x: pos.x, y: pos.y };
                         this.setState({ rotate: rotate });
+                        return;
+                    } else if (p.id == 9) {
+                        // perspective
+                        const perspX = (pos.x - p.x) * zoom / 50;
+                        const perspY = (pos.y - p.y) * zoom / 50;
+                        if(!e.shift) {
+                            this.setState({ perspX: perspX });
+                            this.setState({ perspY: perspY });
+                        } else if (Math.abs(perspX) > Math.abs(perspY)) {
+                            this.setState({ perspX: perspX });
+                            this.setState({ perspY: 0 });
+                        } else {
+                            this.setState({ perspX: 0 });
+                            this.setState({ perspY: perspY });
+                        }
+                        return;
+                    } else if (p.id == 10) {
+                        // skew
+                        const skewX = (pos.x - p.x) * zoom / -50; // negative so it stretches toward the cursor
+                        const skewY = (pos.y - p.y) * zoom / -50;
+                        if(!e.shift) {
+                            this.setState({ skewX: skewX });
+                            this.setState({ skewY: skewY });
+                        } else if (Math.abs(skewX) > Math.abs(skewY)) {
+                            this.setState({ skewX: skewX });
+                            this.setState({ skewY: 0 });
+                        } else {
+                            this.setState({ skewX: 0 });
+                            this.setState({ skewY: skewY });
+                        }
                         return;
                     }
                     // scale
                     let scaleX, scaleY;
                     if (e.ctrl) {
-                        scaleX = (pos.x - mp.x) / (p.x - mp.x);
-                        scaleY = (pos.y - mp.y) / (p.y - mp.y);
+                        const px = p.x - p.xo;
+                        const py = p.y - p.yo;
+                        const posX = pos.x - p.xo;
+                        const posY = pos.y - p.yo;
+
+                        scaleX = (posX - mp.x) / (px - mp.x);
+                        scaleY = (posY - mp.y) / (py - mp.y);
                         this.setState({ anchorX: 0 });
                         this.setState({ anchorY: 0 });
                     } else {
-                        let q = (p.id > 3) ? this.state.points[p.id - 4] : this.state.points[p.id + 4]; // q is opposite point of active
-                        scaleX = (pos.x - q.x) / (p.x - q.x);
-                        scaleY = (pos.y - q.y) / (p.y - q.y);
-                        let anchorX = Math.sign(p.x - q.x) * -0.5;
-                        let anchorY = Math.sign(p.y - q.y) * 0.5;
+                        const q = (p.id > 3) ? pts[p.id - 4] : pts[p.id + 4]; // q is opposite point of active
+                        const px = p.x - p.xo;
+                        const py = p.y - p.yo;
+                        const posX = pos.x - p.xo;
+                        const posY = pos.y - p.yo;
+
+                        scaleX = (posX - q.x) / (px - q.x);
+                        scaleY = (posY - q.y) / (py - q.y);
+                        const anchorX = !(p.id === 1 || p.id === 5) ? Math.sign(px - q.x) * -0.5 : 0;
+                        const anchorY = !(p.id === 3 || p.id === 7) ? Math.sign(py - q.y) * 0.5 : 0; // makes sure sides have middle anchor
                         this.setState({ anchorX: anchorX });
                         this.setState({ anchorY: anchorY });
                     }
@@ -763,23 +845,24 @@ function main() {
                     }
                     if (e.shift) {
                         // scale both ways equally
-                        if (Number.isFinite(scaleX) && Number.isFinite(scaleY)) {
+                        if (Number.isFinite(scaleX) && Number.isFinite(scaleY) && scaleX < SCALE_MAX && -SCALE_MAX < scaleX) {
                             if (scaleX !== 0) {
-                                this.setState({ scale: scaleX });
+                                this.setState({ scale: scaleX, scaleX: 1, scaleY: 1});
                             }
-                        } else if (!Number.isFinite(scaleY) && scaleX !== 0) {
-                            this.setState({ scaleX: scaleX });
-                        } else if (!Number.isFinite(scaleX) && scaleY !== 0) {
-                            this.setState({ scaleY: scaleY });
+                        } else if (!Number.isFinite(scaleY) && scaleX !== 0 && scaleX < SCALE_MAX && -SCALE_MAX < scaleX) {
+                            this.setState({ scale: scaleX, scaleX: 1, scaleY: 1});
+                        } else if (!Number.isFinite(scaleX) && scaleY !== 0 && scaleY < SCALE_MAX && -SCALE_MAX < scaleY) { // shift scale up/down is killed here and idk why
+                            this.setState({ scale: scaleY, scaleX: 1, scaleY: 1});
                         }
                     } else {
                         // scale both ways independently
-                        if (Number.isFinite(scaleX) && scaleX !== 0) {
+                        if (Number.isFinite(scaleX) && scaleX !== 0 && scaleX < SCALE_MAX && -SCALE_MAX < scaleX) {
                             this.setState({ scaleX: scaleX });
                         }
-                        if (Number.isFinite(scaleY) && scaleY !== 0) {
+                        if (Number.isFinite(scaleY) && scaleY !== 0 && scaleY < SCALE_MAX && -SCALE_MAX < scaleY) {
                             this.setState({ scaleY: scaleY });
                         }
+                        this.setState({ scale: 1 });
                     }
                 }
             }
@@ -788,12 +871,7 @@ function main() {
             if (this.state.activePoint) {
                 this.state.activePoint = false;
                 this.mod.commit();
-                this.setState({ scale: 1 });
-                this.setState({ scaleX: 1 });
-                this.setState({ scaleY: 1 });
-                this.setState({ anchorX: 0 });
-                this.setState({ anchorY: 0 });
-                this.setState({ rotate: 0 });
+                this.setState({ scale: 1, scaleX: 1, scaleY: 1, anchorX: 0, anchorY: 0, rotate: 0, perspX: 0, perspY: 0, skewX: 0, skewY: 0 });
 
                 if (!(this.state.selectedPoints.size === 0)) {
                     const selectedPoints = new Set(this.state.selectedPoints);
