@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       David Lu, Ethan Li, Tobias Bessler, & Xavi Lundberg
 // @description  Adds ability to transform selections
-// @version      0.9.0
+// @version      0.9.2
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -566,7 +566,7 @@ class TransformMod {
         ];
 
         if (this.state.activePoint?.id !== 8) {
-            this.state.points.push({ id: 8, x: midX, y: Math.min(tlY0, blY0) - 100 / zoom }); // Rotate default location
+            this.state.points.push({ id: 8, x: midX, y: Math.min(tmY, bmY) - 100 / zoom }); // Rotate default location
         } else {
             this.state.points.push(this.state.activePoint); // Rotate active
         }
@@ -785,8 +785,23 @@ function main() {
                         return;
                     } else if (p.id == 9) {
                         // perspective
-                        const perspX = (pos.x - p.x) * zoom / 50;
-                        const perspY = (pos.y - p.y) * zoom / 50;
+                        const invert = e.alt ? -1 : 1
+                        const perspX = (pos.x - p.x) * invert * zoom / 50;
+                        const perspY = (pos.y - p.y) * invert * zoom / 50;
+                    if (!(e.alt || e.ctrl)) {
+                        this.setState({ anchorX: 0 });
+                        this.setState({ anchorY: 0 });
+                    } else if (e.shift) {
+                        const anchorX = (Math.abs(perspX) > Math.abs(perspY)) ? 0.5 * Math.sign(pos.x - p.x) : 0;
+                        const anchorY = (Math.abs(perspX) < Math.abs(perspY)) ? -0.5 * Math.sign(pos.y - p.y) : 0;
+                        this.setState({ anchorX: anchorX });
+                        this.setState({ anchorY: anchorY });
+                    } else {
+                        const anchorX = (Math.abs(perspX) < Math.abs(perspY)) ? Math.min(0.5, Math.abs(pos.x - p.x) * 2 / zoom) * Math.sign(pos.x - p.x) : 0.5 * Math.sign(pos.x - p.x);
+                        const anchorY = (Math.abs(perspX) > Math.abs(perspY)) ? Math.min(0.5, Math.abs(pos.y - p.y) * 2 / zoom) * Math.sign(pos.y - p.y) * -1 : -0.5 * Math.sign(pos.y - p.y);
+                        this.setState({ anchorX: anchorX });
+                        this.setState({ anchorY: anchorY });
+                    }
                         if(!e.shift) {
                             this.setState({ perspX: perspX });
                             this.setState({ perspY: perspY });
@@ -816,7 +831,7 @@ function main() {
                     }
                     // scale
                     let scaleX, scaleY;
-                    if (e.ctrl) {
+                    if (!e.ctrl) { // default matches LRA
                         const px = p.x - p.xo;
                         const py = p.y - p.yo;
                         const posX = pos.x - p.xo;
@@ -880,7 +895,7 @@ function main() {
                         store.dispatch(setSelectToolState({ selectedPoints }));
                         this.setState({ selectedPoints: null });
                         // "if you scale without selecting a line in the process, it won't give you the line rider select box (which means it won't show the transform points)
-                        // because if you do setSelectToolState when nothing is selected, it selects it like selecting a single line and idk how to make it not do that"
+                        // because if you do setSelectToolState when nothing is box selected, it selects it like selecting a single line and idk how to make it not do that"
                         // - XaviLR 2025
                     }, 0);
                 }
