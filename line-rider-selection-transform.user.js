@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       David Lu, Ethan Li, Tobias Bessler, & Xavi Lundberg
 // @description  Adds ability to transform selections
-// @version      0.9.2
+// @version      0.9.4
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -24,11 +24,12 @@
 /* constants */
 const SELECT_TOOL = "SELECT_TOOL";
 const EMPTY_SET = new Set();
-const LINE_WIDTH = 2;
+
+// customize
 const POINT_RADIUS = 60; // click detection radius
 const POINT_SIZE = 10;
 const SCALE_POINT_OFFSET = 30;
-const SCALE_MAX = 3;
+const SCALE_MAX = 10;
 
 /* actions */
 const setTool = (tool) => ({
@@ -866,7 +867,7 @@ function main() {
                             }
                         } else if (!Number.isFinite(scaleY) && scaleX !== 0 && scaleX < SCALE_MAX && -SCALE_MAX < scaleX) {
                             this.setState({ scale: scaleX, scaleX: 1, scaleY: 1});
-                        } else if (!Number.isFinite(scaleX) && scaleY !== 0 && scaleY < SCALE_MAX && -SCALE_MAX < scaleY) { // shift scale up/down is killed here and idk why
+                        } else if ((!Number.isFinite(scaleX) || Math.abs(scaleX) > 1000 ) && scaleY !== 0 && scaleY < SCALE_MAX && -SCALE_MAX < scaleY) {
                             this.setState({ scale: scaleY, scaleX: 1, scaleY: 1});
                         }
                     } else {
