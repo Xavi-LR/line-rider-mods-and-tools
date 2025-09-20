@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      3.0.0
+// @version      3.1.0
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -15,7 +15,9 @@
 // @downloadURL  http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/line-rider-xanimation-mod.user.js
 // @updateURL    http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/line-rider-xanimation-mod.user.js
 // @homepageURL  https://github.com/Xavi-LR/line-rider-mods-and-tools
-// @grant        none
+// @grant        GM.getValue
+// @grant        GM.setValue
+
 
 // ==/UserScript==
 
@@ -162,10 +164,10 @@ class AnimateMod {
                 }
 
                 // get final frame lines (in a really goofy way)
-                const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
+                const selectToolState = getToolState(unsafeWindow.store.getState(), SELECT_TOOL);
                 if (selectToolState && selectToolState.selectedPoints) {
                     const selectedPoints = new Set();
-                    const allLines = window.Selectors.getSimulatorLines(this.store.getState());
+                    const allLines = unsafeWindow.Selectors.getSimulatorLines(this.store.getState());
                     const keyFor = l => `${l.p1.x}|${l.p1.y}|${l.p2.x}|${l.p2.y}`;
                     const coordsSet = new Set(this.state.finalFrameLines.map(keyFor));
                     const matchingLines = allLines.filter(line => coordsSet.has(keyFor(line)));
@@ -246,12 +248,12 @@ onUpdate(nextState = this.state) {
     }
     // run transform
     this.state.transUpdated = false;
-    this._runTransformImmediate();
+    this._runTransform();
     this.componentUpdateResolved = true;
     return;
 }
 
-_runTransformImmediate() {
+_runTransform() {
   if (this._transformInProgress) return;
   this._transformInProgress = true;
   try {
@@ -277,7 +279,6 @@ _runTransformImmediate() {
             let layerIndex = this.state.layerOrigin;
             const inverse = this.state.inverse ? -1 : 1
             const aLength = this.state.aLength - 1
-            const final = this.state.transformFinalFrame ? 1 / aLength : 1;
 
             const animLines = pretransformedLines.slice();
             const lineLayers = new Map();
@@ -287,7 +288,7 @@ _runTransformImmediate() {
                 lineLayers.get(L).push(line);
             }
 
-            for (let i = 0; i < aLength; i++) {
+            for (let i = 0; i < aLength; i++) { // animation frame loop
                 layerIndex += 1 * this.state.aLayers * inverse;
 
                 if (layerIndex > this.state.groupEnd) {
@@ -330,7 +331,9 @@ _runTransformImmediate() {
                     }
                 }
 
-                const mainAccel = (Math.pow((i + 1), this.state.accel))
+                const progress = this.state.buildOffPrevFrame ? 1 : (i + 1);
+                const final = this.state.transformFinalFrame ? progress / aLength : progress;
+                const mainAccel = (Math.pow((i + 1), this.state.accel));
                 const nudge = new V2({
                     x: final * mainAccel * (this.state.nudgeXSmall + this.state.nudgeXBig),
                     y: final * -1 * mainAccel * (this.state.nudgeYSmall + this.state.nudgeYBig)
@@ -348,11 +351,11 @@ _runTransformImmediate() {
                 for (let line of pretransformedLines) {
                     const p1 = preparePointAlong(
                         new V2(line.p1),
-                        preCenter, this.state.alongPerspX, this.state.alongPerspY, preTransform
+                        preCenter, this.state.alongPerspX * final, this.state.alongPerspY * final, preTransform, this.state.perspRotate, this.state.perspFocal
                     );
                     const p2 = preparePointAlong(
                         new V2(line.p2),
-                        preCenter, this.state.alongPerspX, this.state.alongPerspY, preTransform
+                        preCenter, this.state.alongPerspX * final, this.state.alongPerspY * final, preTransform, this.state.perspRotate, this.state.perspFocal
                     );
                     selectedLines.push({ original: line, p1, p2 });
                 }
@@ -362,12 +365,12 @@ _runTransformImmediate() {
                 bb.y = bb.y + nudge.y;
 
                 const anchor = new V2({
-                    x: bb.x + (0.5 + this.state.anchorX) * bb.width,
-                    y: bb.y + (0.5 - this.state.anchorY) * bb.height
+                    x: bb.x + (0.5 + this.state.anchorX * final) * bb.width,
+                    y: bb.y + (0.5 - this.state.anchorY * final) * bb.height
                 });
 
-                const alongPerspX = this.state.alongPerspX * 0.01;
-                const alongPerspY = this.state.alongPerspY * 0.01;
+                const alongPerspX = this.state.alongPerspX * 0.01 * final;
+                const alongPerspY = this.state.alongPerspY * 0.01 * final;
                 const postTransform = buildRotTransform(alongRot);
 
                 let perspX = final * mainAccel * this.state.perspX;
@@ -378,16 +381,16 @@ _runTransformImmediate() {
                 const perspSafety = Math.pow(10, this.state.perspClamping);
 
                 if (this.state.relativePersp) {
-                    let perspXDenominator = bb.width * this.state.scale * this.state.scaleX;
+                    let perspXDenominator = bb.width * ((this.state.scale - 1) * final + 1) * ((this.state.scaleX - 1) * final + 1);
                     if (Math.abs(bb.width) < perspSafety) {
                         perspXDenominator = perspSafety;
                     }
-                    perspX = final * perspX / perspXDenominator;
-                    let perspYDenominator = bb.height * this.state.scale * this.state.scaleY;
+                    perspX = perspX / perspXDenominator;
+                    let perspYDenominator = bb.height * ((this.state.scale - 1) * final + 1) * ((this.state.scaleY - 1) * final + 1);
                     if (Math.abs(perspYDenominator) < perspSafety) {
                         perspYDenominator = perspSafety;
                     }
-                    perspY = final * perspY / perspYDenominator;
+                    perspY = perspY / perspYDenominator;
                 } else {
                     perspX = 0.01 * perspX;
                     perspY = 0.01 * perspY;
@@ -442,11 +445,12 @@ _runTransformImmediate() {
                     let extraNudgeX = 0;
                     let extraNudgeY = 0;
                     if (this.state.rMoveX !== 0 && notFreeze) {
-                        extraNudgeX = accel * seedRandom(seedBase, this.state.rMoveX);
+                        extraNudgeX = accel * final * seedRandom(seedBase, this.state.rMoveX);
                     }
                     if (this.state.rMoveY !== 0 && notFreeze) {
-                        extraNudgeY = accel * seedRandom(seedBase + 100, this.state.rMoveY);
+                        extraNudgeY = accel * final * seedRandom(seedBase + 100, this.state.rMoveY);
                     }
+                    const rNudge = new V2({ x: extraNudgeX, y: extraNudgeY });
 
                     let scaleRandomX = 1;
                     let scaleRandomY = 1;
@@ -458,7 +462,7 @@ _runTransformImmediate() {
                         } else {
                             // random between rScaleX and 1
                             const rand01 = (seedRandom(seedBase + 200, 1) + 1) / 2;
-                            scaleRandomX = (this.state.rScaleX + rand01 * (1 - this.state.rScaleX));
+                            scaleRandomX = (this.state.rScaleX + rand01 * (1 - this.state.rScaleX * final));
                         }
                     }
 
@@ -470,33 +474,33 @@ _runTransformImmediate() {
                         } else {
                             // random between rScaleY and 1
                             const rand01 = (seedRandom(seedBase + 300, 1) + 1) / 2;
-                            scaleRandomY = (this.state.rScaleY + rand01 * (1 - this.state.rScaleY));
+                            scaleRandomY = (this.state.rScaleY + rand01 * (1 - this.state.rScaleY * final));
                         }
                     }
 
                     // random rotation
                     let rotRandomRad = 0;
                     if (this.state.rRotate !== 0 && notFreeze) {
-                        const rotDeg = accel * seedRandom(seedBase + 400, this.state.rRotate);
+                        const rotDeg = accel * final * seedRandom(seedBase + 400, this.state.rRotate);
                         rotRandomRad = rotDeg * Math.PI / 180;
                     }
 
                     // translation
                     const p1 = restorePoint(
                         transformPersp(
-                            new V2(line.p1).sub(anchor).transform(transform),
-                            perspX, perspY, perspSafety
+                            new V2(line.p1.add(nudge).add(rNudge)).sub(anchor).transform(transform),
+                            perspX, perspY, perspSafety, this.state.perspRotate, this.state.perspFocal
                         ),
-                        anchor, postTransform, alongPerspX, alongPerspY, preCenter
-                    ).add(nudge).add(new V2({ x: extraNudgeX, y: extraNudgeY }));
+                        anchor, postTransform, alongPerspX, alongPerspY, preCenter, this.state.perspRotate, this.state.perspFocal
+                    );
 
                     const p2 = restorePoint(
                         transformPersp(
-                            new V2(line.p2).sub(anchor).transform(transform),
-                            perspX, perspY, perspSafety
+                            new V2(line.p2.add(nudge).add(rNudge)).sub(anchor).transform(transform),
+                            perspX, perspY, perspSafety, this.state.perspRotate, this.state.perspFocal
                         ),
-                        anchor, postTransform, alongPerspX, alongPerspY, preCenter
-                    ).add(nudge).add(new V2({ x: extraNudgeX, y: extraNudgeY }));
+                        anchor, postTransform, alongPerspX, alongPerspY, preCenter, this.state.perspRotate, this.state.perspFocal
+                    );
 
                     // compute midpoint of this line (for per-line random scale/rotate)
                     const mid = new V2({
@@ -539,7 +543,7 @@ _runTransformImmediate() {
                     let targetLayerId = originalLayerId;
 
                     if (typeof baseIndex === "undefined") {
-                        console.warn("Could not find base index for layer id:", originalLayerId);
+//                        console.warn("Could not find base index for layer id:", originalLayerId);
                     } else {
                         const step = (layerIndex - this.state.layerOrigin);
                         const targetIndex = baseIndex + step;
@@ -586,7 +590,8 @@ _runTransformImmediate() {
                         y1: p1.y + offset.y,
                         x2: p2.x + offset.x,
                         y2: p2.y + offset.y,
-                        width: this.state.rScaleWidth ? widthWithRandom : baseWidth
+                        width: this.state.rScaleWidth ? widthWithRandom : baseWidth,
+                        type: 2
                     });
 
                     const newLine = Object.assign(Object.create(Object.getPrototypeOf(line.original)), line.original);
@@ -598,7 +603,9 @@ _runTransformImmediate() {
                     }
                 } // end per-line loop
                 // prepare for next iteration
+                if (this.state.buildOffPrevFrame) {
                 pretransformedLines = posttransformedLines.slice();
+                }
                 posttransformedLines.length = 0;
 
                 let endTime = performance.now();
@@ -640,6 +647,8 @@ _runTransformImmediate() {
                 alongPerspX,
                 alongPerspY,
                 preCenter,
+                this.state.perspRotate,
+                this.state.perspFocal
             );
             const p2 = restorePoint(
                 new V2(line.p2).sub(anchor),
@@ -648,6 +657,8 @@ _runTransformImmediate() {
                 alongPerspX,
                 alongPerspY,
                 preCenter,
+                this.state.perspRotate,
+                this.state.perspFocal
             );
             line.p1.x = p1.x;
             line.p1.y = p1.y;
@@ -683,12 +694,16 @@ _runTransformImmediate() {
                     perspX,
                     perspY,
                     perspSafety,
+                    this.state.perspRotate,
+                    this.state.perspFocal
                 ),
                 anchor,
                 postTransform,
                 alongPerspX,
                 alongPerspY,
                 preCenter,
+                this.state.perspRotate,
+                this.state.perspFocal
             );
             const p2 = restorePoint(
                 transformPersp(
@@ -696,12 +711,16 @@ _runTransformImmediate() {
                     perspX,
                     perspY,
                     perspSafety,
+                    this.state.perspRotate,
+                    this.state.perspFocal
                 ),
                 anchor,
                 postTransform,
                 alongPerspX,
                 alongPerspY,
                 preCenter,
+                this.state.perspRotate,
+                this.state.perspFocal
             );
             line.p1.x = p1.x;
             line.p1.y = p1.y;
@@ -780,16 +799,16 @@ _runTransformImmediate() {
 
     getTransform (final, mainAccel) {
 
-        let scaleX = final * (this.state.scale * this.state.scaleX - 1) + 1;
+        let scaleX = final * (((this.state.scale - 1) * final + 1) * this.state.scaleX - 1) + 1;
         if (this.state.flipX) {
             scaleX *= -1;
         }
-        let scaleY = final * (this.state.scale * this.state.scaleY - 1) + 1;
+        let scaleY = final * (((this.state.scale - 1) * final + 1) * this.state.scaleY - 1) + 1;
         if (this.state.flipY) {
             scaleY *= -1;
         }
         const transform = buildAffineTransform(
-            this.state.skewX, this.state.skewY,
+            final * this.state.skewX, final * this.state.skewY,
             scaleX, scaleY,
             final * mainAccel * this.state.rotate * Math.PI / 180
         );
@@ -836,12 +855,11 @@ _runTransformImmediate() {
 }
 
 function main () {
-
     const {
         React,
         store,
         DefaultTool,
-    } = window;
+    } = unsafeWindow;
 
     const e = React.createElement;
 
@@ -881,16 +899,91 @@ function _updateTransLoop() {
 }
 if (!_updateTransRaf) _updateTransLoop.call(this);
 
-            document.addEventListener('keydown', (event) => {
-                if (event.key === 'Enter') {
-                    console.log("updating");
-                    if (this.state.manualUpdateMode) {
-                        this.state.transUpdated = true;
-                        this.mod.onUpdate();
-                    }
-                }
-            });
+document.addEventListener('keydown', (event) => {
+  if (this.state.editingHotkey) return;
 
+  const keyStr = this.keyEventToString(event);
+
+  if (keyStr === this.state.keyCommit) {
+    console.log("committing");
+    if (!this.state.manualUpdateMode) {
+      this.onCommit();
+      return;
+    }
+  }
+    if (keyStr === this.state.keyManualUpdate) {
+    console.log("updating");
+    if (this.state.manualUpdateMode) {
+      this.state.transUpdated = true;
+      this.mod.onUpdate();
+    }
+  } else if (keyStr === this.state.keySetALength) {
+    console.log("getting aLength");
+      this.setALength();
+  } else if (keyStr === this.state.keyToggleOverlay) {
+    console.log("toggling overlay");
+    if (this.state.oInvisFrames) {
+      this.disableOInvisFrames();
+    } else {
+      this.enableOInvisFrames();
+    }
+  } else if (keyStr === this.state.keyResetTransform) {
+    console.log("resetting transform");
+      this.onResetTransform();
+  }
+}, true);
+
+            this.defaultTransform = {
+                inverse: false,
+                buildOffPrevFrame: false,
+                transformFinalFrame: true,
+                editAnimation: false,
+                animationOffset: 0,
+                camLock: false,
+
+                accel: 0,
+                nudgeXSmall: 0,
+                nudgeXBig: 0,
+                nudgeYSmall: 0,
+                nudgeYBig: 0,
+                scaleX: 1,
+                scaleY: 1,
+                scale: 1,
+                scaleWidth: false,
+                rotate: 0,
+                flipX: false,
+                flipY: false,
+
+                // === Adjust Origin (relativeTools) ===
+                alongPerspX: 0,
+                alongPerspY: 0,
+                alongRot: 0,
+                anchorX: 0,
+                anchorY: 0,
+
+                // === Warp Tools (warpTools) ===
+                relativePersp: true,
+                perspClamping: -5,
+                perspX: 0,
+                perspY: 0,
+                perspRotate: true,
+                perspFocal: 100,
+                skewX: 0,
+                skewY: 0,
+
+                // === Randomness (randomness) ===
+                rAccel: 0,
+                shake: false,
+                shakeInterval: 1,
+                shakeFreeze: false,
+                rSeed: 0,
+                rMoveX: 0,
+                rMoveY: 0,
+                rScaleX: 1,
+                rScaleY: 1,
+                rScaleWidth: false,
+                rRotate: 0,
+            };
             this.defaults = {
                 // === Animation Tools (animTools) ===
                 animTools: true,
@@ -925,51 +1018,7 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
 
                 // === Transform Tools (transTools) ===
                 aLength: 1,
-                inverse: false,
-                transformFinalFrame: true,
-                editAnimation: false,
-                animationOffset: 0,
-                camLock: false,
-                accel: 0,
-                nudgeXSmall: 0,
-                nudgeXBig: 0,
-                nudgeYSmall: 0,
-                nudgeYBig: 0,
-                scaleX: 1,
-                scaleY: 1,
-                scale: 1,
-                scaleWidth: false,
-                rotate: 0,
-                flipX: false,
-                flipY: false,
-
-                // === Adjust Origin (relativeTools) ===
-                alongPerspX: 0,
-                alongPerspY: 0,
-                alongRot: 0,
-                anchorX: 0,
-                anchorY: 0,
-
-                // === Warp Tools (warpTools) ===
-                relativePersp: true,
-                perspClamping: -5,
-                perspX: 0,
-                perspY: 0,
-                skewX: 0,
-                skewY: 0,
-
-                // === Randomness (randomness) ===
-                rAccel: 0,
-                shake: false,
-                shakeInterval: 1,
-                shakeFreeze: false,
-                rSeed: 0,
-                rMoveX: 0,
-                rMoveY: 0,
-                rScaleX: 1,
-                rScaleY: 1,
-                rScaleWidth: false,
-                rRotate: 0,
+                ...this.defaultTransform,
 
                 // === Performance & Commit (performance) ===
                 manualUpdateMode: false,
@@ -979,6 +1028,13 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
 
                 selectFinalFrameOnCommit: true,
                 resetALengthOnCommit: false,
+
+                // === Hotkeys (hotkeys) ===
+                keyCommit: "Enter",
+                keyManualUpdate: "Enter",
+                keySetALength: "I",
+                keyToggleOverlay: "V",
+                keyResetTransform: "Alt+Z",
             };
 
             this.state = {
@@ -993,6 +1049,7 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                 warpTools: false,
                 randomness: false,
                 performance: false,
+                hotkeys: false,
 
                 points: [],
                 midpoint: {x: 0, y: 0 },
@@ -1016,6 +1073,8 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                     this.setState({ layerOrigin: Math.min(this.state.layerOrigin, nextLayerCount) });
                 }
             });
+
+            this.loadSavedHotkeys();
 
             if (!this._docListenersInstalled) {
                 const _computeButton = (ev) => {
@@ -1275,6 +1334,10 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
             this.setState({ ...this.defaults });
         }
 
+        onResetTransform () {
+            this.setState({ ...this.defaultTransform });
+        }
+
         onCommit () {
             if (this.state.resetALengthOnCommit) {
                 this.state.aLength = 1;
@@ -1493,26 +1556,6 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
             }
         }
 
-
-        // okay my bad i ai generated this part and need to change it
-        // Try to get current frame number from known places in the store; fallback to 1
-        getCurrentFrameNumber() {
-            const stateBefore = store.getState();
-            const st = stateBefore?.simulator?.engine?.engine?.state || {};
-            // check a few likely property names
-            const candidates = [st.frame, st.currentFrame, st.frameIndex, st.currentFrameIndex, st.frameNumber];
-            for (const c of candidates) {
-                if (typeof c === "number" && Number.isFinite(c) && c >= 1) return Math.floor(c);
-            }
-            // if zero-based frame index found, try that (e.g., 0..n-1)
-            const idxCandidates = [st.frameIndex0, st.frame0, st.index];
-            for (const c of idxCandidates) {
-                if (typeof c === "number" && Number.isFinite(c)) return Math.floor(c) + 1;
-            }
-            // fallback
-            return 1;
-        }
-
         moveLayerSequenceUp(folderStartIndex, step) {
             const folderLayers = this.getFolderLayers();
             if (!folderLayers.length) return;
@@ -1647,10 +1690,8 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
             try {
                 const stateBefore = store.getState();
 
-                // get current player/frame index (robust: prefer getPlayerIndex if available)
-                const frameIndex = (typeof getPlayerIndex === "function")
-                ? (getPlayerIndex(stateBefore) || 0)
-                : (stateBefore && stateBefore.player && (stateBefore.player.index || 0)) || 0;
+                // get current player/frame index
+                const frameIndex = (getPlayerIndex(stateBefore) || 0);
 
                 // avoid repeat work
                 if (this._lastSyncedFrame === frameIndex) return;
@@ -1750,16 +1791,14 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                 const stateBefore = store.getState();
 
                 // current frame
-                const frameIndex = (typeof getPlayerIndex === "function")
-                ? (getPlayerIndex(stateBefore) || 0)
-                : (stateBefore && stateBefore.player && (stateBefore.player.index || 0)) || 0;
+                const frameIndex = (getPlayerIndex(stateBefore) || 0);
 
                 // throttle by frame unless forced
                 if (!force && this._lastInvisFrame === frameIndex) return;
                 this._lastInvisFrame = frameIndex;
 
                 const editorPos = getEditorCamPos(stateBefore);
-                const allLines = window.Selectors.getSimulatorLines(store.getState()) || [];
+                const allLines = unsafeWindow.Selectors.getSimulatorLines(store.getState()) || [];
 
                 // filter nearby lines to not lag as much
                 const radius = 300;
@@ -1872,9 +1911,9 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                 });
 
                 if (this.state.oSelected) {
-                    const selectToolState = getToolState(window.store.getState(), SELECT_TOOL);
+                    const selectToolState = getToolState(unsafeWindow.store.getState(), SELECT_TOOL);
                     if (selectToolState && selectToolState.selectedPoints) {
-                        const allLines = window.Selectors.getSimulatorLines(store.getState());
+                        const allLines = unsafeWindow.Selectors.getSimulatorLines(store.getState());
                         function getLineIdsFromPoints(points) {
                             return new Set([...points].map(point => point >> 1));
                         }
@@ -1908,8 +1947,8 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                     console.warn("error setting renderer scene:", err);
                 }
             }; // end schedule()
-            if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-                window.requestAnimationFrame(schedule);
+            if (typeof unsafeWindow !== "undefined" && typeof unsafeWindow.requestAnimationFrame === "function") {
+                unsafeWindow.requestAnimationFrame(schedule);
             } else {
                 setTimeout(schedule, 0);
             }
@@ -2162,7 +2201,7 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
             console.log("Found animated folders:", animatedFolders);
 
             // Define visibility override for Line Rider
-            window.getLayerVisibleAtTime = (id, frame) => {
+            unsafeWindow.getLayerVisibleAtTime = (id, frame) => {
                 for (const folderObj of animatedFolders) {
                     const { opts = {}, childLayerIds = [] } = folderObj;
                     const indexInGroup = childLayerIds.indexOf(id);
@@ -2238,14 +2277,56 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
 
         // disable the feature and clear scene
         disableOInvisFrames() {
-            this.setState({ oInvisFrames: false });
+            this.setState({ oInvisFrames: false, renderOverlay: [] });
             if (this._oInvisUnsub) {
                 try { this._oInvisUnsub(); } catch (e) { /* ignore */ }
                 this._oInvisUnsub = null;
                 this._lastInvisFrame = null;
             }
             // clear the edit scene so those overlay lines disappear
-            store.dispatch(setEditScene(new Millions.Scene())); // broken
+            store.dispatch(setEditScene(new Millions.Scene()));
+        }
+
+
+      setALength() {
+            try {
+                const stateBefore = store.getState();
+
+                // get current player/frame index
+                const frameIndex = (getPlayerIndex(stateBefore) || 0);
+
+                // folder layers in render order (0..n-1)
+                const folderLayers = this.getFolderLayers();
+                if (!folderLayers || folderLayers.length === 0) return;
+
+                // find the first (lowest index) visible layer in the folder for this frame
+                let firstVisibleFolderIndex = -1;
+                for (let i = 0; i < folderLayers.length; i++) {
+                    const id = folderLayers[i].layer.id;
+                    // call getLayerVisibleAtTime on the phone and see if they pick up
+                    let visible = false;
+                    if (typeof getLayerVisibleAtTime === "function") {
+                        // getLayerVisibleAtTime expects (id, index)
+                        visible = !!getLayerVisibleAtTime(id, frameIndex);
+                    } else {
+                        return;
+                    }
+                    if (visible) { firstVisibleFolderIndex = i; break; }
+                }
+
+                if (firstVisibleFolderIndex === -1) {
+                    // nothing visible at this frame in this folder
+                    return;
+                }
+
+                // compute new animation length value
+                const aLayers = this.state.aLayers;
+                const newALength = ((firstVisibleFolderIndex - this.state.layerOrigin + this.state.groupBegin) / aLayers) + 1
+                    this.setState({aLength: newALength});
+
+            } catch (err) {
+                console.warn("setALength error", err);
+            }
         }
 
         _incrementFolderName(name) {
@@ -2407,6 +2488,132 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
             }
         }
 
+// ---------- hotkeys ----------
+// Normalize a KeyboardEvent into canonical string like "Ctrl+Shift+K" or "Enter" or "Space"
+keyEventToString(e) {
+const modifierKeys = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']);
+  const parts = [];
+  if (e.ctrlKey) parts.push('Ctrl');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey) parts.push('Shift');
+  if (e.metaKey) parts.push('Meta');
+
+  let k = e.key;
+
+  if (k === ' ') k = 'Space';
+  if (modifierKeys.has(k)) {
+    return parts.join('+') || k;
+  }
+
+  if (k.length === 1) k = k.toUpperCase();
+
+  parts.push(k);
+  return parts.join('+');
+}
+
+normalizeHotkeyString(s) {
+  return s || '';
+}
+
+async loadSavedHotkeys() {
+  try {
+    // finds keyExampleName
+    const flatKeys = Object.keys(this.state).filter(k => /^key[A-Z]/.test(k));
+    if (flatKeys.length === 0) return;
+
+    const names = flatKeys.map(k => k.replace(/^key/, ''));
+    const promises = names.map((name, i) =>
+      GM.getValue(`hotkey.${name}`, this.state[flatKeys[i]])
+    );
+    const values = await Promise.all(promises);
+
+    const newState = {};
+    flatKeys.forEach((fk, i) => newState[fk] = this.normalizeHotkeyString(values[i]));
+    this.setState(newState);
+  } catch (err) {
+    console.warn('Failed loading hotkeys', err);
+  }
+}
+
+async setHotkeyValue(flatKey, value) {
+  try {
+    if (!/^key[A-Z]/.test(flatKey)) {
+      console.warn('setHotkeyValue broken');
+      return;
+    }
+    const name = flatKey.replace(/^key/, '');
+    await GM.setValue(`hotkey.${name}`, value);
+    // update state and clear editing flag
+    const st = {};
+    st[flatKey] = value;
+    st.editingHotkey = null;
+    this.setState(st);
+  } catch (err) {
+    console.warn('Failed saving hotkey', err);
+  }
+}
+
+getHotkeyValue(flatKey) {
+  if (!/^key[A-Z]/.test(flatKey)) return '';
+  return this.state[flatKey] || '';
+}
+
+onResetHotkey(flatKey) {
+  // reset to default: prefer this.defaults[flatKey] if available
+  const def = (this.defaults && this.defaults[flatKey]) ? this.defaults[flatKey] : '';
+  // note: setHotkeyValue will persist the reset
+  this.setHotkeyValue(flatKey, def);
+}
+
+// ---------- listening for new hotkey ----------
+startListeningForHotkey(flatKey) {
+const modifierKeys = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']);
+  if (this._hotkeyHandler) return;
+  if (!/^key[A-Z]/.test(flatKey)) return;
+
+  this.setState({ editingHotkey: flatKey });
+
+  const handler = (e) => {
+    // allow Escape and Backspace to work immediately
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      this.stopListeningForHotkey();
+      return;
+    }
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      this.setHotkeyValue(flatKey, '');
+      this.stopListeningForHotkey();
+      return;
+    }
+
+    // If this keydown is *only* a modifier (Ctrl/Shift/Alt/Meta), ignore it
+    // so the user can hold Ctrl and press another key.
+    if (modifierKeys.has(e.key)) {
+      // do NOT preventDefault so the browser/page can still respond to modifiers if needed
+      return;
+    }
+
+    // Now we have a non-modifier key (possibly while modifiers are held) — commit it.
+    e.preventDefault(); // prevent page side-effects for the final bind
+    const newKeyStr = this.keyEventToString(e);
+    this.setHotkeyValue(flatKey, newKeyStr);
+    this.stopListeningForHotkey();
+  };
+
+  // Use capture so we reliably see the events before page handlers
+  document.addEventListener('keydown', handler, true);
+  this._hotkeyHandler = handler;
+}
+
+stopListeningForHotkey() {
+  if (this._hotkeyHandler) {
+    document.removeEventListener('keydown', this._hotkeyHandler, true);
+    this._hotkeyHandler = null;
+  }
+  this.setState({ editingHotkey: null });
+}
+
         onActivate () {
             if (this.state.active) {
                 this.state.renderOverlay = [];
@@ -2516,6 +2723,51 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
         renderSpacer(height = 8) {
             return e("div", { style: { height: `${height}px`, flex: "0 0 auto" } });
         }
+
+renderHotkey(flatKey, title = null) {
+  if (!title) title = flatKey;
+  if (!/^key[A-Z]/.test(flatKey)) return e('div', null, 'Invalid hotkey key');
+
+  const current = this.getHotkeyValue(flatKey) || '';
+  const editing = this.state.editingHotkey === flatKey;
+
+  const boxStyle = {
+    display: 'inline-block',
+    border: '1px solid #888',
+    padding: '0.2em 0.5em',
+    marginLeft: '0.5em',
+    cursor: 'pointer',
+    userSelect: 'none',
+    minWidth: '5em',
+    textAlign: 'center',
+    borderRadius: '4px',
+    background: editing ? '#f3f3f3' : 'white'
+  };
+
+  return e('div', { style: { display: 'inline-block', margin: '0 .5em', verticalAlign: 'middle' } },
+    e('span', null, title),
+    e('button',
+      {
+        onClick: () => {
+          if (editing) this.stopListeningForHotkey();
+          else this.startListeningForHotkey(flatKey);
+        },
+        title: 'Click then press a key, Escape to cancel, Backspace to clear',
+        style: boxStyle
+      },
+      editing ? 'Press key...' : (current || '—')
+    ),
+    e('button',
+      {
+        onClick: () => this.onResetHotkey(flatKey),
+        title: 'Reset to default',
+        style: { marginLeft: '0.4em', cursor: 'pointer' }
+      },
+      '⟳'
+    )
+  );
+}
+
 
         render () {
             if (this.state.oInvisFrames && this.state.updateALot) {
@@ -2811,10 +3063,6 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
         let frameIndex; // 0-based
         if (activeFolderIndex >= 0) {
             frameIndex = Math.floor(activeFolderIndex / num);
-        } else {
-            // fallback: try simulator current frame number if active layer not in folder
-            const frameNum = this.getCurrentFrameNumber();
-            frameIndex = Math.max(0, frameNum - 1);
         }
 
         const targetIndexWithinFolder = frameIndex * num + folderIndex;
@@ -2890,7 +3138,7 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                   { style: this.sectionBox },
                   this.renderSlider("aLength", { min: 1, max: 500, step: 1 }, "Animation Length"),
                   this.renderCheckbox("inverse", "Animate Backwards"),
-                  this.renderCheckbox("keyframeMode", "[Press i] to set Animation Length❌"),
+                  this.renderCheckbox("buildOffPrevFrame", "Build Off Previous Frame"),
                   this.renderCheckbox("transformFinalFrame", "Transform End Frame"),
                   this.renderSpacer(),
                   this.renderCheckbox("editAnimation", "Edit Selected Animation"),
@@ -2937,10 +3185,12 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                       "div",
                       { style: this.sectionBox },
                       this.renderCheckbox("relativePersp", "Relative Perspective"),
-                      this.renderSlider("perspClamping", { min: -5, max: 0, step: 0.01 }, "Perspective Clamping"),
+                      this.renderSlider("perspClamping", { min: -10, max: 10, step: 0.01 }, "Perspective Clamping"),
                       this.renderSpacer(),
-                      this.renderSlider("perspX", { min: -1, max: 1, step: 0.01 }, "Perpective X"),
-                      this.renderSlider("perspY", { min: -1, max: 1, step: 0.01 }, "Perpective Y"),
+                      this.renderSlider("perspX", { min: -5, max: 5, step: 0.01 }, "Perspective X"),
+                      this.renderSlider("perspY", { min: -5, max: 5, step: 0.01 }, "Perspective Y"),
+                      this.renderCheckbox("perspRotate", "Perspective 3D Rotate"),
+                      this.renderSlider("perspFocal", { min: 0, max: 1000, step: 1 }, "Z Distance"),
                       this.renderSpacer(),
                       this.renderSlider("skewX", { min: -2, max: 2, step: 0.01 }, "Skew X"),
                       this.renderSlider("skewY", { min: -2, max: 2, step: 0.01 }, "Skew Y"),
@@ -2976,7 +3226,7 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                   && e(
                       "div",
                       { style: this.sectionBox },
-                      this.renderCheckbox("manualUpdateMode", "Manual Update [Press Enter]"),
+                      this.renderCheckbox("manualUpdateMode", `Manual Update [Press ${this.state.keyCommit}]`),
                       this.renderSlider("maxUpdateTime", { min: 0, max: 100, step: 1 }, "Max Update Time"),
                       this.renderSpacer(),
                       this.renderCheckbox("scaleMax", "Max Scale"),
@@ -2984,9 +3234,25 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
                       this.renderCheckbox("selectFinalFrameOnCommit", "Select Final Frame on Commit"),
                       this.renderCheckbox("resetALengthOnCommit", "Reset Animation Length on Commit"),
                   ),
+                  this.renderSection("hotkeys", "Hotkeys"),
+                  this.state.hotkeys
+                  && e(
+                      "div",
+                      { style: this.sectionBox },
+                      this.renderHotkey("keyCommit", "Commit"),
+                      this.renderSpacer(),
+                      this.renderHotkey("keyManualUpdate", "Manual Update"),
+                      this.renderSpacer(),
+                      this.renderHotkey("keySetALength", "set Animation Length"),
+                      this.renderSpacer(),
+                      this.renderHotkey("keyToggleOverlay", "Toggle Overlay"),
+                      this.renderSpacer(),
+                      this.renderHotkey("keyResetTransform", "Reset Transform"),
+              ),
               ),
               e("button", { style: { float: "left" }, onClick: () => this.onCommit() }, "Commit"),
               e("button", { style: { float: "left" }, onClick: () => this.onResetAll() }, "Reset"),
+              e("button", { style: { float: "left" }, onClick: () => this.onResetTransform() }, "Reset Transform"),
           ),
           e(
               "button",
@@ -2998,15 +3264,15 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
     }
 
     // this is a setting and not a standalone tool because it extends the select tool
-    window.registerCustomSetting(XaviAnimateModComponent);
+    unsafeWindow.registerCustomSetting(XaviAnimateModComponent);
 }
 
 /* init */
-if (window.registerCustomSetting) {
+if (unsafeWindow.registerCustomSetting) {
     main();
 } else {
-    const prevCb = window.onCustomToolsApiReady;
-    window.onCustomToolsApiReady = () => {
+    const prevCb = unsafeWindow.onCustomToolsApiReady;
+    unsafeWindow.onCustomToolsApiReady = () => {
         if (prevCb) prevCb();
         main();
     };
@@ -3034,7 +3300,7 @@ function getLinesFromPoints (points) {
 }
 
 function buildAffineTransform (shearX, shearY, scaleX, scaleY, rot) {
-    const { V2 } = window;
+    const { V2 } = unsafeWindow;
 
     let tShear = [ 1 + shearX * shearY, shearX, shearY, 1, 0, 0 ];
     let tScale = [ scaleX, 0, 0, scaleY, 0, 0 ];
@@ -3045,7 +3311,7 @@ function buildAffineTransform (shearX, shearY, scaleX, scaleY, rot) {
 }
 
 function buildRotTransform (rot) {
-    const { V2 } = window;
+    const { V2 } = unsafeWindow;
 
     let u = V2.from(1, 0).rot(rot);
     let v = V2.from(0, 1).rot(rot);
@@ -3053,25 +3319,59 @@ function buildRotTransform (rot) {
     return [ u.x, v.x, u.y, v.y, 0, 0 ];
 }
 
-function preparePointAlong (p, preCenter, alongPerspX, alongPerspY, preTransform) {
-    return transformPersp(p.sub(preCenter), -alongPerspX, -alongPerspY, 0).transform(preTransform);
+function preparePointAlong (p, preCenter, alongPerspX, alongPerspY, preTransform, perspRotate, focal) {
+    return transformPersp(p.sub(preCenter), -alongPerspX, -alongPerspY, 0, perspRotate, focal).transform(preTransform);
 }
 
-function transformPersp (p, perspX, perspY, epsilon) {
-    const pt = new V2(p);
+function transformPersp(p, perspX, perspY, epsilon, perspRotate, focal) {
+  const pt = new V2(p);
+
+  if (!perspRotate) {
     let w = (1 + perspX * pt.x + perspY * pt.y);
-    if (Math.abs(w) < epsilon) {
-        w = Math.sign(w) * epsilon;
-    }
+    if (Math.abs(w) < epsilon) w = Math.sign(w) * epsilon;
     pt.x = pt.x / w;
     pt.y = pt.y / w;
     return pt;
+  }
+  const angleScale = 100;
+
+  const yaw = -1 * perspX * angleScale; // rotation about Y axis
+  const pitch = perspY * angleScale; // rotation about X axis
+
+  function rotateYX(x, y, z, yaw, pitch) {
+    // rotate about Y
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const xr = cy * x + sy * z;
+    const yr = y;
+    const zr = -sy * x + cy * z;
+    // rotate about X
+    const cx = Math.cos(pitch), sx = Math.sin(pitch);
+    const xr2 = xr;
+    const yr2 = cx * yr - sx * zr;
+    const zr2 = sx * yr + cx * zr;
+    return { x: xr2, y: yr2, z: zr2 };
+  }
+
+  const r = rotateYX(pt.x, pt.y, 0, yaw, pitch);
+
+  let worldX = r.x;
+  let worldY = r.y;
+  let worldZ = r.z + focal;
+
+  if (Math.abs(worldZ) < epsilon) worldZ = Math.sign(worldZ || 1) * epsilon;
+
+  let projX = (focal * worldX) / worldZ;
+  let projY = (focal * worldY) / worldZ;
+
+  pt.x = projX;
+  pt.y = projY;
+  return pt;
 }
 
-function restorePoint (p, anchor, postTransform, alongPerspX, alongPerspY, preCenter) {
+function restorePoint (p, anchor, postTransform, alongPerspX, alongPerspY, preCenter, perspRotate, focal) {
     return transformPersp(
         p.add(anchor).transform(postTransform),
-        alongPerspX, alongPerspY, 0
+        alongPerspX, alongPerspY, 0, perspRotate, focal
     ).add(preCenter);
 }
 
@@ -3167,7 +3467,7 @@ function genBoundingBoxPoints(points, size, thickness, color, zIndex) {
 
 function getCameraPosAtFrame(frame, track) {
     const viewport = this.store.getState().camera.playbackDimensions || { width: 1920, height: 1080 };
-    const zoom = window.getAutoZoom ? window.getAutoZoom(frame) : this.store.getState().camera.playbackZoom;
+    const zoom = unsafeWindow.getAutoZoom ? unsafeWindow.getAutoZoom(frame) : this.store.getState().camera.playbackZoom;
     const initCamera = this.store.getState().camera.playbackFollower.getCamera(track, {
         zoom,
         width: viewport.width,
@@ -3229,4 +3529,4 @@ function makeSeededRNG(seed) {
         const r01 = u64To01(res.out);
         return (r01 * 2 - 1) * range;
     };
-} // The End
+}
