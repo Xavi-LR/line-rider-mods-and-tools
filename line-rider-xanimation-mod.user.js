@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      3.1.0
+// @version      3.4.5
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -153,7 +153,7 @@ class AnimateMod {
                 const activeIndex = layers.findIndex(l => l.id === activeLayerId);
                 // determine new active layer
                 const inverse = this.state.inverse ? -1 : 1;
-                let newActiveLayer = activeIndex + ((this.state.aLength - 1) * this.state.aLayers * inverse);
+                let newActiveLayer = activeIndex + ((sumOf(this.state.multiALength) - this.state.multiALength.length) * this.state.aLayers * inverse);
                 const aBoundsLength = this.state.groupEnd - this.state.groupBegin + 1;
                 while (newActiveLayer < (this.state.groupBegin - 1)) {
                     newActiveLayer = newActiveLayer + aBoundsLength
@@ -278,7 +278,7 @@ _runTransform() {
             const layersArray = getSimulatorLayers(this.store.getState());
             let layerIndex = this.state.layerOrigin;
             const inverse = this.state.inverse ? -1 : 1
-            const aLength = this.state.aLength - 1
+            const multiALength = sumOf(this.state.multiALength) - this.state.multiALength.length
 
             const animLines = pretransformedLines.slice();
             const lineLayers = new Map();
@@ -287,8 +287,18 @@ _runTransform() {
                 if (!lineLayers.has(L)) lineLayers.set(L, []);
                 lineLayers.get(L).push(line);
             }
+      let multiKeyId = 0;
+      let multiI = 0;
 
-            for (let i = 0; i < aLength; i++) { // animation frame loop
+            for (let i = 0; i < multiALength; i++) { // animation frame loop
+            let aLength = this.state.multiALength[multiKeyId] - 1;
+                if (multiI == aLength) {
+                    multiKeyId = multiKeyId + 1;
+                    multiI = 0;
+                    aLength = this.state.multiALength[multiKeyId] - 1;
+                }
+                multiI++
+
                 layerIndex += 1 * this.state.aLayers * inverse;
 
                 if (layerIndex > this.state.groupEnd) {
@@ -308,7 +318,7 @@ _runTransform() {
                     while (maxLayer < this.state.groupBegin) {
                         maxLayer = maxLayer + groupLength;
                     }
-                    maxLayer = maxLayer * aLength
+                    maxLayer = maxLayer * multiALength
 
                     const groupLines = [];
                     for (let L = minLayer; L <= maxLayer; L++) {
@@ -330,13 +340,130 @@ _runTransform() {
                         }
                     }
                 }
+                const progress = this.state.buildOffPrevFrame ? (1 / aLength) : (multiI / aLength);
 
-                const progress = this.state.buildOffPrevFrame ? 1 : (i + 1);
-                const final = this.state.transformFinalFrame ? progress / aLength : progress;
-                const mainAccel = (Math.pow((i + 1), this.state.accel));
+const multi = (transform, scale = false) => {
+
+  // segment endpoints (cumulative sums)
+  const startVal = (typeof sumOf(transform, multiKeyId - 1) !== 'undefined')
+      ? sumOf(transform, multiKeyId - 1) // - (multiKeyId * defaultVal)
+      : 0;
+  const delta = transform[multiKeyId] ?? 0;
+  const endVal = startVal + delta;
+
+  // preserve exact linear behavior when smoothing is off
+  if (!this.state.smoothMulti) {
+    return progress * delta + startVal;
+  }
+
+  // guard bad frame counts
+  if (!aLength || aLength <= 0) {
+    return progress * delta + startVal;
+  }
+
+  // neighbors exist
+  const prevExists = (typeof sumOf(transform, multiKeyId - 2) !== 'undefined');
+  const nextExists = (typeof sumOf(transform, multiKeyId + 1) !== 'undefined');
+
+  // build p0,p1,p2,p3 (p1=startVal, p2=endVal)
+  let p0 = prevExists ? sumOf(transform, multiKeyId - 2) : undefined;
+  let p3 = nextExists ? sumOf(transform, multiKeyId + 1) : undefined;
+
+  // if neighbor is missing and smoothMultiEnds is true, mirror the slope; otherwise leave undefined
+  if (typeof p0 === 'undefined' && this.state.smoothMultiEnds) {
+    p0 = startVal - (endVal - startVal);
+  }
+  if (typeof p3 === 'undefined' && this.state.smoothMultiEnds) {
+    p3 = endVal + (endVal - startVal);
+  }
+
+  // If there are no neighbors at all and ends should NOT be smoothed -> fallback linear
+  if (!prevExists && !nextExists && !this.state.smoothMultiEnds) {
+    return progress * delta + startVal;
+  }
+
+  // If still undefined, duplicate endpoints (safe fallback)
+  if (typeof p0 === 'undefined') p0 = startVal;
+  if (typeof p3 === 'undefined') p3 = endVal;
+
+  // --- time spacing (use adjacent segment frame counts) -------------------
+  // framesPrev: frames used by previous multiKeyId
+  const framesPrev = (multiKeyId - 1 >= 0)
+    ? Math.max(1, (this.state.multiALength[multiKeyId - 1] - 1))
+    : aLength;
+  const framesNext = (multiKeyId + 1 < this.state.multiALength.length)
+    ? Math.max(1, (this.state.multiALength[multiKeyId + 1] - 1))
+    : aLength;
+
+  // parameter times (in "frame" units). We place p1 at 0 and p2 at framesForSegment.
+  const t0 = -framesPrev;
+  const t1 = 0;
+  const t2 = aLength;
+  const t3 = aLength + framesNext;
+
+  // absolute time for current sample in the same units
+  const T = this.state.buildOffPrevFrame ? 1 : multiI;
+
+  // --- compute non-uniform Catmull-Rom tangents (converted to Hermite form) ---
+  // helper: safe division
+  const safeDiv = (num, den, fallback = 0) => (den === 0 ? fallback : (num / den));
+
+  // slope over current segment (used as fallback or when ends shouldn't be smoothed)
+  const slope = safeDiv(endVal - startVal, (t2 - t1), 0);
+
+  // m1: derivative at p1
+  let m1;
+  const denom1 = (t2 - t0);
+  if (denom1 !== 0) {
+    m1 = (
+      safeDiv((endVal - startVal), (t2 - t1), 0) * (t1 - t0) +
+      safeDiv((startVal - p0), (t1 - t0), 0) * (t2 - t1)
+    ) / denom1;
+  } else {
+    m1 = slope;
+  }
+
+  // m2: derivative at p2
+  let m2;
+  const denom2 = (t3 - t1);
+  if (denom2 !== 0) {
+    m2 = (
+      safeDiv((p3 - endVal), (t3 - t2), 0) * (t2 - t1) +
+      safeDiv((endVal - startVal), (t2 - t1), 0) * (t3 - t2)
+    ) / denom2;
+  } else {
+    m2 = slope;
+  }
+
+  // If a neighbor is missing AND smoothMultiEnds === false, force that tangent to produce linear
+  if (!prevExists && !this.state.smoothMultiEnds) m1 = slope;
+  if (!nextExists && !this.state.smoothMultiEnds) m2 = slope;
+
+  // --- Hermite interpolation between p1 (startVal) and p2 (endVal) ------------
+  // normalized s in [0,1] across the current segment (multiI from 1..framesForSegment)
+  const denomSegment = (t2 - t1);
+  const s = denomSegment !== 0 ? Math.max(0, Math.min(1, (T - t1) / denomSegment)) : 1.0;
+
+  const s2 = s * s;
+  const s3 = s2 * s;
+  const h00 = 2 * s3 - 3 * s2 + 1;
+  const h10 = s3 - 2 * s2 + s;
+  const h01 = -2 * s3 + 3 * s2;
+  const h11 = s3 - s2;
+
+  // tangents m1,m2 are derivatives wrt 't' (frame units), Hermite expects tangent scaled by (t2 - t1)
+  const value = h00 * startVal + h10 * m1 * (t2 - t1) + h01 * endVal + h11 * m2 * (t2 - t1);
+
+  return value;
+};
+
+
+                const nudgeX = multi(this.state.nudgeXSmall);
+                const nudgeY = multi(this.state.nudgeYSmall) * -1;
+
                 const nudge = new V2({
-                    x: final * mainAccel * (this.state.nudgeXSmall + this.state.nudgeXBig),
-                    y: final * -1 * mainAccel * (this.state.nudgeYSmall + this.state.nudgeYBig)
+                    x: nudgeX,
+                    y: nudgeY
                 });
                 const preBB = getBoundingBox(pretransformedLines);
                 const preCenter = new V2({
@@ -348,14 +475,17 @@ _runTransform() {
                 const preTransform = buildRotTransform(-alongRot);
                 const selectedLines = [];
 
+                const alongPerspX = multi(this.state.alongPerspX) * 0.01;
+                const alongPerspY = multi(this.state.alongPerspY) * 0.01;
+
                 for (let line of pretransformedLines) {
                     const p1 = preparePointAlong(
                         new V2(line.p1),
-                        preCenter, this.state.alongPerspX * final, this.state.alongPerspY * final, preTransform, this.state.perspRotate, this.state.perspFocal
+                        preCenter, alongPerspX, alongPerspY, preTransform, this.state.perspRotate, this.state.perspFocal
                     );
                     const p2 = preparePointAlong(
                         new V2(line.p2),
-                        preCenter, this.state.alongPerspX * final, this.state.alongPerspY * final, preTransform, this.state.perspRotate, this.state.perspFocal
+                        preCenter, alongPerspX, alongPerspY, preTransform, this.state.perspRotate, this.state.perspFocal
                     );
                     selectedLines.push({ original: line, p1, p2 });
                 }
@@ -364,29 +494,37 @@ _runTransform() {
                 bb.x = bb.x + nudge.x;
                 bb.y = bb.y + nudge.y;
 
+                const anchorX = multi(this.state.anchorX); //[multiKeyId] ?? 0;
+                const anchorY = multi(this.state.anchorY); //[multiKeyId] ?? 0;
+
                 const anchor = new V2({
-                    x: bb.x + (0.5 + this.state.anchorX * final) * bb.width,
-                    y: bb.y + (0.5 - this.state.anchorY * final) * bb.height
+                    x: bb.x + (0.5 + anchorX) * bb.width,
+                    y: bb.y + (0.5 - anchorY) * bb.height
                 });
 
-                const alongPerspX = this.state.alongPerspX * 0.01 * final;
-                const alongPerspY = this.state.alongPerspY * 0.01 * final;
                 const postTransform = buildRotTransform(alongRot);
 
-                let perspX = final * mainAccel * this.state.perspX;
-                let perspY = final * mainAccel * this.state.perspY;
-                const transform = this.getTransform(final, mainAccel);
+                let perspX = multi(this.state.perspX);
+                let perspY = multi(this.state.perspY);
+                const rotate = multi(this.state.rotate);
+                const scale = multi(this.state.scale) + 1;
+                const scaleX = multi(this.state.scaleX) + 1;
+                const scaleY = multi(this.state.scaleY) + 1;
+                const skewX = multi(this.state.skewX);
+                const skewY = multi(this.state.skewY);
+
+                const transform = this.getTransform(rotate, scale, scaleX, scaleY, skewX, skewY);
                 const transformedLines = [];
 
                 const perspSafety = Math.pow(10, this.state.perspClamping);
 
                 if (this.state.relativePersp) {
-                    let perspXDenominator = bb.width * ((this.state.scale - 1) * final + 1) * ((this.state.scaleX - 1) * final + 1);
+                    let perspXDenominator = bb.width * scale * scaleX;
                     if (Math.abs(bb.width) < perspSafety) {
                         perspXDenominator = perspSafety;
                     }
                     perspX = perspX / perspXDenominator;
-                    let perspYDenominator = bb.height * ((this.state.scale - 1) * final + 1) * ((this.state.scaleY - 1) * final + 1);
+                    let perspYDenominator = bb.height * scale * scaleY;
                     if (Math.abs(perspYDenominator) < perspSafety) {
                         perspYDenominator = perspSafety;
                     }
@@ -395,7 +533,7 @@ _runTransform() {
                     perspX = 0.01 * perspX;
                     perspY = 0.01 * perspY;
                 }
-                if ((this.state.transformFinalFrame && i == aLength - 1) || (!this.state.transformFinalFrame && i == 0)) {
+                if (i == sumOf(this.state.multiALength, this.state.activeMultiId) - this.state.activeMultiId - 2) { // final frame of active keyframe
                     this.drawBoundingBoxes(
                         bb,
                         anchor,
@@ -445,10 +583,10 @@ _runTransform() {
                     let extraNudgeX = 0;
                     let extraNudgeY = 0;
                     if (this.state.rMoveX !== 0 && notFreeze) {
-                        extraNudgeX = accel * final * seedRandom(seedBase, this.state.rMoveX);
+                        extraNudgeX = accel * progress * seedRandom(seedBase, this.state.rMoveX);
                     }
                     if (this.state.rMoveY !== 0 && notFreeze) {
-                        extraNudgeY = accel * final * seedRandom(seedBase + 100, this.state.rMoveY);
+                        extraNudgeY = accel * progress * seedRandom(seedBase + 100, this.state.rMoveY);
                     }
                     const rNudge = new V2({ x: extraNudgeX, y: extraNudgeY });
 
@@ -462,7 +600,7 @@ _runTransform() {
                         } else {
                             // random between rScaleX and 1
                             const rand01 = (seedRandom(seedBase + 200, 1) + 1) / 2;
-                            scaleRandomX = (this.state.rScaleX + rand01 * (1 - this.state.rScaleX * final));
+                            scaleRandomX = (this.state.rScaleX + rand01 * (1 - this.state.rScaleX * progress));
                         }
                     }
 
@@ -474,14 +612,14 @@ _runTransform() {
                         } else {
                             // random between rScaleY and 1
                             const rand01 = (seedRandom(seedBase + 300, 1) + 1) / 2;
-                            scaleRandomY = (this.state.rScaleY + rand01 * (1 - this.state.rScaleY * final));
+                            scaleRandomY = (this.state.rScaleY + rand01 * (1 - this.state.rScaleY * progress));
                         }
                     }
 
                     // random rotation
                     let rotRandomRad = 0;
                     if (this.state.rRotate !== 0 && notFreeze) {
-                        const rotDeg = accel * final * seedRandom(seedBase + 400, this.state.rRotate);
+                        const rotDeg = accel * progress * seedRandom(seedBase + 400, this.state.rRotate);
                         rotRandomRad = rotDeg * Math.PI / 180;
                     }
 
@@ -560,10 +698,14 @@ _runTransform() {
                         const camera = getCameraPosAtFrame(this.playerIndex + i, this.track); // i * (this.sixty ? 2 / 3 : 1)
                         offset.x = camera.x - initCamera.x;
                         offset.y = camera.y - initCamera.y;
+                    } else if (this.state.parallax !== 0) {
+                        const camera = getCameraPosAtFrame(this.playerIndex + i, this.track); // i * (this.sixty ? 2 / 3 : 1)
+                        offset.x = (camera.x - initCamera.x) * this.state.parallax;
+                        offset.y = (camera.y - initCamera.y) * this.state.parallax;
                     }
 
                     // compute width with potential random scale contribution (average of X/Y)
-                    const baseWidth = this.state.scaleWidth ? (jsonLine.width || 1) * Math.pow(this.state.scale, i + 1) : jsonLine.width;
+                    const baseWidth = this.state.scaleWidth ? (jsonLine.width || 1) * Math.pow(scale, i + 1) : jsonLine.width;
                     let widthWithRandom = baseWidth;
                     if (scaleRandomX !== 1 || scaleRandomY !== 1) {
                         const scaleAvg = (scaleRandomX + scaleRandomY) / 2;
@@ -598,7 +740,7 @@ _runTransform() {
                     newLine.p1 = p1;
                     newLine.p2 = p2;
                     posttransformedLines.push(newLine);
-                    if (this.state.selectFinalFrameOnCommit && i == aLength - 1) {
+                    if (this.state.selectFinalFrameOnCommit && i == multiALength - 1) {
                         this.state.finalFrameLines.push(newLine);
                     }
                 } // end per-line loop
@@ -619,7 +761,7 @@ _runTransform() {
                 }
                 this.store.dispatch(addLines(transformedLines));
                 this.state.allLines = allLines;
-            }
+            } // end of aLength loop
                 this.changed = true;
         } finally {
             this._transformInProgress = false;
@@ -677,11 +819,15 @@ _runTransform() {
             new Millions.Color(0, 0, 0, 255),
             1,
         );
-        let perspX = this.state.perspX;
-        let perspY = this.state.perspY;
+        let perspX = sumOf(this.state.perspX, this.state.activeMultiId);
+        let perspY = sumOf(this.state.perspY, this.state.activeMultiId);
         if (this.state.relativePersp) {
-            perspX = perspX / (bb.width * this.state.scale * this.state.scaleX);
-            perspY = perspY / (bb.height * this.state.scale * this.state.scaleY);
+            const offset = this.state.activeMultiId + 1;
+            const scale = sumOf(this.state.scale, this.state.activeMultiId) + offset;
+            const scaleX = sumOf(this.state.scaleX, this.state.activeMultiId) + offset;
+            const scaleY = sumOf(this.state.scaleY, this.state.activeMultiId) + offset;
+            perspX = perspX / (bb.width * scale * scaleX);
+            perspY = perspY / (bb.height * scale * scaleY);
         } else {
             perspX = 0.01 * perspX;
             perspY = 0.01 * perspY;
@@ -774,7 +920,7 @@ _runTransform() {
             this.state.points.push(this.state.activePoint); // Rotate active
         }
 
-        if (this.state.warpTools) {
+        if (this.state.warpWidget) {
             if (this.state.activePoint?.id !== 9) {
                 this.state.points.push({ id: 9, x: midX, y: midY }); // Perspective
             } else {
@@ -790,34 +936,37 @@ _runTransform() {
         }
 
         this.state.midpoint = { x: midX, y: midY };
-        const pointBoxes = genBoundingBoxPoints(this.state.points, POINT_SIZE / zoom, 1 / zoom, new Millions.Color(64, 128, 255, 255), 1);
+        const pointBoxes = genBoundingBoxPoints(this.state.points, POINT_SIZE / zoom, 1 / zoom, 1);
         const boxes = this.state.advancedTools ? [...preBox, ...postBox, ...pointBoxes] : [...postBox, ...pointBoxes];
         this.state.renderBB = boxes;
         const sceneEntities = this.state.renderOverlay ? [...boxes, ...this.state.renderOverlay] : boxes;
         this.store.dispatch(setEditScene(Millions.Scene.fromEntities(sceneEntities)));
     }
 
-    getTransform (final, mainAccel) {
+    getTransform (rotate, scale, multiScaleX, multiScaleY, skewX, skewY) {
 
-        let scaleX = final * (((this.state.scale - 1) * final + 1) * this.state.scaleX - 1) + 1;
+        let scaleX = scale * multiScaleX;
         if (this.state.flipX) {
             scaleX *= -1;
         }
-        let scaleY = final * (((this.state.scale - 1) * final + 1) * this.state.scaleY - 1) + 1;
+        let scaleY = scale * multiScaleY;
         if (this.state.flipY) {
             scaleY *= -1;
         }
         const transform = buildAffineTransform(
-            final * this.state.skewX, final * this.state.skewY,
+            skewX, skewY,
             scaleX, scaleY,
-            final * mainAccel * this.state.rotate * Math.PI / 180
+            rotate * Math.PI / 180
         );
         return transform;
     }
 
     active () {
+        if (typeof this.state.multiALength[this.state.activeMultiId] === "undefined") {
+            this.state.multiALength[this.state.activeMultiId] = 1;
+        }
         return this.state.active && this.selectedPoints.size > 0 && (
-            this.state.aLength !== 1
+            this.state.multiALength[0] !== 1
         );
     }
 
@@ -901,8 +1050,14 @@ if (!_updateTransRaf) _updateTransLoop.call(this);
 
 document.addEventListener('keydown', (event) => {
   if (this.state.editingHotkey) return;
-
   const keyStr = this.keyEventToString(event);
+
+if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.state[k] ?? this.defaultMainHotkeys[k]) === keyStr))) {
+    event.preventDefault(); // prevents default actions (if any)
+    event.stopImmediatePropagation(); // prevents other handlers on the same target
+    event.stopPropagation(); // extra safety for bubbling handlers
+  }
+
 
   if (keyStr === this.state.keyCommit) {
     console.log("committing");
@@ -917,9 +1072,18 @@ document.addEventListener('keydown', (event) => {
       this.state.transUpdated = true;
       this.mod.onUpdate();
     }
-  } else if (keyStr === this.state.keySetALength) {
-    console.log("getting aLength");
-      this.setALength();
+  } else if (keyStr.includes(this.state.keySetALength)) {
+    if (this.state.active) {
+        let backwards = false;
+        let move = false;
+    if (keyStr.includes(this.state.keySetALengthBackwards)) {
+        backwards = true;
+    }
+    if (keyStr.includes(this.state.keyMoveALength)) {
+        move = true;
+    }
+      this.setALength(backwards, move);
+    }
   } else if (keyStr === this.state.keyToggleOverlay) {
     console.log("toggling overlay");
     if (this.state.oInvisFrames) {
@@ -930,59 +1094,38 @@ document.addEventListener('keydown', (event) => {
   } else if (keyStr === this.state.keyResetTransform) {
     console.log("resetting transform");
       this.onResetTransform();
+  } else if (keyStr === this.state.keyPrevMultiTrans) {
+    console.log("prev transform");
+      if (this.state.activeMultiId !== 0) {
+          this.setState({activeMultiId: (this.state.activeMultiId - 1)});
+      }
+  } else if (keyStr === this.state.keyNextMultiTrans) {
+    console.log("next transform");
+      if ((this.state.multiALength[this.state.activeMultiId]) !== 1) {
+          this.setState({activeMultiId: (this.state.activeMultiId + 1)});
+      }
+  } else if (keyStr === this.state.keyToggleManualUpdate) {
+    console.log("toggled manual");
+    if (this.state.manualUpdateMode) {
+          this.setState({manualUpdateMode: false, updateALot: true});
+      } else {
+          this.setState({manualUpdateMode: true, updateALot: false});
+      }
   }
 }, true);
-
-            this.defaultTransform = {
-                inverse: false,
-                buildOffPrevFrame: false,
-                transformFinalFrame: true,
-                editAnimation: false,
-                animationOffset: 0,
-                camLock: false,
-
-                accel: 0,
+            this.defaultKeyframe = {
                 nudgeXSmall: 0,
-                nudgeXBig: 0,
                 nudgeYSmall: 0,
-                nudgeYBig: 0,
-                scaleX: 1,
-                scaleY: 1,
-                scale: 1,
-                scaleWidth: false,
+                scaleX: 0,
+                scaleY: 0,
+                scale: 0,
                 rotate: 0,
-                flipX: false,
-                flipY: false,
-
-                // === Adjust Origin (relativeTools) ===
-                alongPerspX: 0,
-                alongPerspY: 0,
-                alongRot: 0,
                 anchorX: 0,
                 anchorY: 0,
-
-                // === Warp Tools (warpTools) ===
-                relativePersp: true,
-                perspClamping: -5,
                 perspX: 0,
                 perspY: 0,
-                perspRotate: true,
-                perspFocal: 100,
                 skewX: 0,
                 skewY: 0,
-
-                // === Randomness (randomness) ===
-                rAccel: 0,
-                shake: false,
-                shakeInterval: 1,
-                shakeFreeze: false,
-                rSeed: 0,
-                rMoveX: 0,
-                rMoveY: 0,
-                rScaleX: 1,
-                rScaleY: 1,
-                rScaleWidth: false,
-                rRotate: 0,
             };
             this.defaults = {
                 // === Animation Tools (animTools) ===
@@ -1017,8 +1160,48 @@ document.addEventListener('keydown', (event) => {
                 editLayers: false,
 
                 // === Transform Tools (transTools) ===
-                aLength: 1,
-                ...this.defaultTransform,
+                activeMultiId: 0,
+                multiALength: {},
+                smoothMulti: true,
+                smoothMultiEnds: false,
+                impactFutureKeyframes: false,
+
+                ...this.defaultKeyframe,
+                inverse: false,
+                warpWidget: false,
+                buildOffPrevFrame: false,
+                editAnimation: false,
+                animationOffset: 0,
+                camLock: false,
+                parallax: 0,
+
+                scaleWidth: false,
+                flipX: false,
+                flipY: false,
+
+                // === Adjust Origin (relativeTools) ===
+                alongPerspX: 0,
+                alongPerspY: 0,
+                alongRot: 0,
+
+                // === Warp Tools (warpTools) ===
+                relativePersp: false,
+                perspClamping: -5,
+                perspRotate: true,
+                perspFocal: 100,
+
+                // === Randomness (randomness) ===
+                rAccel: 0,
+                shake: false,
+                shakeInterval: 1,
+                shakeFreeze: false,
+                rSeed: 0,
+                rMoveX: 0,
+                rMoveY: 0,
+                rScaleX: 1,
+                rScaleY: 1,
+                rScaleWidth: false,
+                rRotate: 0,
 
                 // === Performance & Commit (performance) ===
                 manualUpdateMode: false,
@@ -1028,23 +1211,34 @@ document.addEventListener('keydown', (event) => {
 
                 selectFinalFrameOnCommit: true,
                 resetALengthOnCommit: false,
-
-                // === Hotkeys (hotkeys) ===
+            };
+            this.defaultMainHotkeys = {
+                // these keys' custom values prevent other event with those key combos when the mod is active
                 keyCommit: "Enter",
                 keyManualUpdate: "Enter",
                 keySetALength: "I",
                 keyToggleOverlay: "V",
                 keyResetTransform: "Alt+Z",
+                keyPrevMultiTrans: "ArrowDown",
+                keyNextMultiTrans: "ArrowUp",
+                keyToggleManualUpdate: "Ctrl+M"
             };
-
+            this.defaultHotkeys = {
+                // === Hotkeys (hotkeys) ===
+                ...this.defaultMainHotkeys,
+                keySetALengthBackwards: "Shift",
+                keyMoveALength: "Ctrl",
+            };
             this.state = {
                 ...this.defaults,
+                ...this.defaultHotkeys,
                 active: false,
                 numLayers: getSimulatorLayers(store.getState()).length,
 
                 folderSettings: false,
                 aLayersSection: true,
                 transTools: false,
+                transformations: false,
                 relativeTools: false,
                 warpTools: false,
                 randomness: false,
@@ -1140,9 +1334,15 @@ document.addEventListener('keydown', (event) => {
         }
         onPointerDown(e) {
             const pos = DefaultTool.prototype.toTrackPos.call(this._toolCtx, e.pos);
+            const multiId = this.state.activeMultiId;
 
             for (let i = 0; i < this.state.points.length; i++) {
                 if (inBounds(pos, this.state.points[i], POINT_RADIUS / getEditorZoom(store.getState()) / 2)) {
+                    if (e.button === 2) {
+                        console.log("deleting keyframe");
+                        this.onDeleteKeyframe();
+                        return;
+                    }
                     const id = this.state.points[i].id;
                     if (id == 9) {
                         this.state.activePoint = { id: id, x: (this.state.midpoint.x), y: (this.state.midpoint.y) };
@@ -1153,7 +1353,7 @@ document.addEventListener('keydown', (event) => {
                         const skewPY = (tl.y - tl.yo) - 80 / zoom;
                         this.state.activePoint = { id: id, x: skewPX, y: skewPY};
                     } else if (id == 11) {
-                        this.state.activePoint = { id: id, x: (this.state.midpoint.x - this.state.nudgeXSmall - this.state.nudgeXBig), y: (this.state.midpoint.y + this.state.nudgeYSmall + this.state.nudgeYBig) };
+                        this.state.activePoint = { id: id, x: (this.state.midpoint.x - (this.state.nudgeXSmall[multiId] ?? 0)), y: (this.state.midpoint.y + (this.state.nudgeYSmall[multiId] ?? 0)) };
                     } else {
                         this.state.activePoint = this.state.points[i];
                     }
@@ -1171,6 +1371,7 @@ document.addEventListener('keydown', (event) => {
                 const mp = this.state.midpoint;
                 const pts = this.state.points;
                 const zoom = getEditorZoom(store.getState());
+                const multiId = this.state.activeMultiId;
                 if (e.button === 0) {
                     if (p.id == 8) {
                         // rotation
@@ -1178,7 +1379,7 @@ document.addEventListener('keydown', (event) => {
                         // raw angle from position; (-270, 90]
                         let rawAngle = (Math.atan2(vec.y, vec.x)) * -180 / Math.PI - 90;
 
-                        const prev = this.state.rotate;
+                        const prev = this.state.rotate[multiId];
 
                         // shift rawAngle by +/-360 until it's within [-180, 180] of prev
                         let continuousAngle = rawAngle;
@@ -1192,7 +1393,9 @@ document.addEventListener('keydown', (event) => {
                         }
 
                         this.state.activePoint = { id: 8, x: pos.x, y: pos.y };
-                        this.setState({ rotate: rotate });
+                        this.setIndexStates([
+                            { key: 'rotate', index: multiId, value: rotate },
+                        ]);
                         return;
 
                     } else if (p.id == 9) {
@@ -1201,22 +1404,40 @@ document.addEventListener('keydown', (event) => {
                         const perspX = (pos.x - p.x) * invert * zoom / 50;
                         const perspY = (pos.y - p.y) * invert * zoom / 50;
                         if (!(e.alt || e.ctrl)) {
-                            this.setState({ anchorX: 0, anchorY: 0 });
+                        this.setIndexStates([
+                            { key: 'anchorX', index: multiId, value: 0 },
+                            { key: 'anchorY', index: multiId, value: 0 },
+                        ]);
                         } else if (e.shift) {
                             const anchorX = (Math.abs(perspX) > Math.abs(perspY)) ? 0.5 * Math.sign(pos.x - p.x) : 0;
                             const anchorY = (Math.abs(perspX) < Math.abs(perspY)) ? -0.5 * Math.sign(pos.y - p.y) : 0;
-                            this.setState({ anchorX: anchorX, anchorY: anchorY });
+                        this.setIndexStates([
+                            { key: 'anchorX', index: multiId, value: anchorX },
+                            { key: 'anchorY', index: multiId, value: anchorY },
+                        ]);
                         } else {
                             const anchorX = (Math.abs(perspX) < Math.abs(perspY)) ? Math.min(0.5, Math.abs(pos.x - p.x) * 2 / zoom) * Math.sign(pos.x - p.x) : 0.5 * Math.sign(pos.x - p.x);
                             const anchorY = (Math.abs(perspX) > Math.abs(perspY)) ? Math.min(0.5, Math.abs(pos.y - p.y) * 2 / zoom) * Math.sign(pos.y - p.y) * -1 : -0.5 * Math.sign(pos.y - p.y);
-                            this.setState({ anchorX: anchorX, anchorY: anchorY });
+                        this.setIndexStates([
+                            { key: 'anchorX', index: multiId, value: anchorX },
+                            { key: 'anchorY', index: multiId, value: anchorY },
+                        ]);
                         }
                         if(!e.shift) {
-                            this.setState({ perspX: perspX, perspY: perspY });
+                        this.setIndexStates([
+                            { key: 'perspX', index: multiId, value: perspX },
+                            { key: 'perspY', index: multiId, value: perspY },
+                        ]);
                         } else if (Math.abs(perspX) > Math.abs(perspY)) {
-                            this.setState({ perspX: perspX, perspY: 0 });
+                        this.setIndexStates([
+                            { key: 'perspX', index: multiId, value: perspX },
+                            { key: 'perspY', index: multiId, value: 0 },
+                        ]);
                         } else {
-                            this.setState({ perspX: 0, perspY: perspY });
+                        this.setIndexStates([
+                            { key: 'perspX', index: multiId, value: perspX },
+                            { key: 'perspY', index: multiId, value: 0 },
+                        ]);
                         }
                         return;
                     } else if (p.id == 10) {
@@ -1224,18 +1445,30 @@ document.addEventListener('keydown', (event) => {
                         const skewX = (pos.x - p.x) * zoom / -50; // negative so it stretches toward the cursor
                         const skewY = (pos.y - p.y) * zoom / -50;
                         if(!e.shift) {
-                            this.setState({ skewX: skewX, skewY: skewY });
+                        this.setIndexStates([
+                            { key: 'skewX', index: multiId, value: skewX },
+                            { key: 'skewY', index: multiId, value: skewY },
+                        ]);
                         } else if (Math.abs(skewX) > Math.abs(skewY)) {
-                            this.setState({ skewX: skewX, skewY: 0 });
+                        this.setIndexStates([
+                            { key: 'skewX', index: multiId, value: skewX },
+                            { key: 'skewY', index: multiId, value: 0 },
+                        ]);
                         } else {
-                            this.setState({ skewX: 0, skewY: skewY });
+                        this.setIndexStates([
+                            { key: 'skewX', index: multiId, value: 0 },
+                            { key: 'skewY', index: multiId, value: skewY },
+                        ]);
                         }
                         return;
                     } else if (p.id == 11) {
                         // translate
                         const nudgeX = (pos.x - p.x);
                         const nudgeY = (pos.y - p.y) * -1;
-                        this.setState({ nudgeXSmall: nudgeX, nudgeYSmall: nudgeY });
+                        this.setIndexStates([
+                            { key: 'nudgeXSmall', index: multiId, value: nudgeX },
+                            { key: 'nudgeYSmall', index: multiId, value: nudgeY }
+                        ]);
                         return;
                     }
                     // scale
@@ -1244,22 +1477,26 @@ document.addEventListener('keydown', (event) => {
                     const py = p.y - p.yo;
                     const posX = pos.x - p.xo;
                     const posY = pos.y - p.yo;
-                    const scaleMax = this.state.transformFinalFrame ? this.state.scaleMax : Math.pow(this.state.scaleMax, 1 / (this.state.aLength - 1));
+                    const scaleMax = this.state.scaleMax;
 
                     if (!e.ctrl) { // default matches LRA
-                        scaleX = (posX - mp.x) / (px - mp.x);
-                        scaleY = (posY - mp.y) / (py - mp.y);
-                        this.setState({ anchorX: 0 });
-                        this.setState({ anchorY: 0 });
+                        scaleX = ((posX - mp.x) / (px - mp.x)) - 1;
+                        scaleY = ((posY - mp.y) / (py - mp.y)) - 1;
+                        this.setIndexStates([
+                            { key: 'anchorX', index: multiId, value: 0 },
+                            { key: 'anchorY', index: multiId, value: 0 }
+                        ]);
                     } else {
-                        const q = (p.id > 3) ? pts[p.id - 4] : pts[p.id + 4]; // q is opposite point of active
+                        const q = (p.id > 3) ? pts[p.id - 4] : pts[p.id + 4]; // q is opposite side scale point from active
 
-                        scaleX = (posX - q.x) / (px - q.x);
-                        scaleY = (posY - q.y) / (py - q.y);
+                        scaleX = ((posX - q.x) / (px - q.x)) - 1;
+                        scaleY = ((posY - q.y) / (py - q.y)) - 1;
                         const anchorX = !(p.id === 1 || p.id === 5) ? Math.sign(px - q.x) * -0.5 : 0;
                         const anchorY = !(p.id === 3 || p.id === 7) ? Math.sign(py - q.y) * 0.5 : 0; // makes sure sides have middle anchor
-                        this.setState({ anchorX: anchorX });
-                        this.setState({ anchorY: anchorY });
+                        this.setIndexStates([
+                            { key: 'anchorX', index: multiId, value: anchorX },
+                            { key: 'anchorY', index: multiId, value: anchorY }
+                        ]);
                     }
                     if (e.alt) {
                         console.log("alt");
@@ -1267,23 +1504,41 @@ document.addEventListener('keydown', (event) => {
                     if (e.shift) {
                         // scale both ways equally
                         if (Number.isFinite(scaleX) && Number.isFinite(scaleY) && scaleX < scaleMax && -scaleMax < scaleX) {
-                            if (scaleX !== 0) {
-                                this.setState({ scale: scaleX, scaleX: 1, scaleY: 1});
+                            if (scaleX !== -1) { // if scale isn't 0
+                        this.setIndexStates([
+                            { key: 'scale', index: multiId, value: scaleX },
+                            { key: 'scaleX', index: multiId, value: 0 },
+                            { key: 'scaleY', index: multiId, value: 0 }
+                        ]);
                             }
                         } else if (!Number.isFinite(scaleY) && scaleX !== 0 && scaleX < scaleMax && -scaleMax < scaleX) {
-                            this.setState({ scale: scaleX, scaleX: 1, scaleY: 1});
+                        this.setIndexStates([
+                            { key: 'scale', index: multiId, value: scaleX },
+                            { key: 'scaleX', index: multiId, value: 0 },
+                            { key: 'scaleY', index: multiId, value: 0 }
+                        ]);
                         } else if ((!Number.isFinite(scaleX) || Math.abs(scaleX) > 1000 ) && scaleY !== 0 && scaleY < scaleMax && -scaleMax < scaleY) {
-                            this.setState({ scale: scaleY, scaleX: 1, scaleY: 1});
+                        this.setIndexStates([
+                            { key: 'scale', index: multiId, value: scaleY },
+                            { key: 'scaleX', index: multiId, value: 0 },
+                            { key: 'scaleY', index: multiId, value: 0 }
+                        ]);
                         }
                     } else {
                         // scale both ways independently
-                        if (Number.isFinite(scaleX) && scaleX !== 0 && scaleX < scaleMax && -scaleMax < scaleX) {
-                            this.setState({ scaleX: scaleX });
+                        if (Number.isFinite(scaleX) && scaleX !== -1 && scaleX < scaleMax && -scaleMax < scaleX) {
+                        this.setIndexStates([
+                            { key: 'scaleX', index: multiId, value: scaleX },
+                        ]);
                         }
-                        if (Number.isFinite(scaleY) && scaleY !== 0 && scaleY < scaleMax && -scaleMax < scaleY) {
-                            this.setState({ scaleY: scaleY });
+                        if (Number.isFinite(scaleY) && scaleY !== -1 && scaleY < scaleMax && -scaleMax < scaleY) {
+                        this.setIndexStates([
+                            { key: 'scaleY', index: multiId, value: scaleY },
+                        ]);
                         }
-                        this.setState({ scale: 1 });
+                        this.setIndexStates([
+                            { key: 'scale', index: multiId, value: 0 },
+                        ]);
                     }
                 }
             }
@@ -1320,27 +1575,62 @@ document.addEventListener('keydown', (event) => {
             }
         }
 
-        onReset (key) {
-            let changedState = {};
-            if (key == "rSeed") {
-                changedState[key] = Math.round(Math.random()*10000)
-            } else {
-                changedState[key] = this.defaults[key];
-            }
-            this.setState(changedState);
+onReset (key, multi = false) {
+    if (key === "rSeed") {
+        this.setState({ [key]: Math.round(Math.random() * 10000) });
+        return;
+    }
+
+    if (!multi) {
+        this.setState({ [key]: this.defaults[key] });
+        return;
+    }
+    this.setState(prev => {
+        const prevVal = prev[key];
+        let arr;
+
+        if (Array.isArray(prevVal)) {
+            arr = prevVal.slice();
+        } else if (prevVal && typeof prevVal === 'object') {
+            arr = [];
+            Object.keys(prevVal).forEach(k => {
+                const idx = Number(k);
+                if (!Number.isNaN(idx)) arr[idx] = prevVal[k];
+            });
+        } else if (typeof prevVal !== 'undefined') {
+            arr = [prevVal];
+        } else {
+            arr = [];
         }
+
+        const idx = Number.isInteger(prev.activeMultiId) ? prev.activeMultiId : 0;
+        arr[idx] = this.defaults[key];
+
+        return { [key]: arr };
+    });
+}
+
 
         onResetAll () {
             this.setState({ ...this.defaults });
         }
 
         onResetTransform () {
-            this.setState({ ...this.defaultTransform });
+            const index = this.state.activeMultiId;
+            const defaults = this.defaultKeyframe || {};
+
+            const updates = Object.keys(defaults).map(key => ({
+                key,
+                index,
+                value: defaults[key]
+            }));
+
+            this.setIndexStates(updates);
         }
 
         onCommit () {
             if (this.state.resetALengthOnCommit) {
-                this.state.aLength = 1;
+                this.state.multiALength = [1];
             }
             this.mod.commit();
             if (!this.state.selectFinalFrameOnCommit) {
@@ -1350,6 +1640,163 @@ document.addEventListener('keydown', (event) => {
                 });
             }
         }
+
+onDeleteKeyframe () {
+  const index = this.state.activeMultiId;
+  if (typeof index !== 'number' || index < 0) return; // guard
+
+  // Build keys from defaultKeyframe + multiALength (dedupe)
+  const defaults = Object.keys(this.defaultKeyframe || {});
+  const keys = Array.from(new Set(defaults.concat(['multiALength'])));
+
+  if (!keys.length) return;
+
+  this.setState(prev => {
+    const patch = {};
+
+    // Remove the item at `index` from each array state that exists
+    keys.forEach(key => {
+      const arr = prev[key];
+      if (!Array.isArray(arr)) return; // skip non-arrays
+      if (index >= arr.length) return; // nothing to remove
+
+      // create a new array without the element at `index`
+      patch[key] = arr.slice(0, index).concat(arr.slice(index + 1));
+    });
+
+    // If nothing to change, abort
+    if (Object.keys(patch).length === 0) return null;
+
+    // Determine a reference length to clamp activeMultiId (choose first changed array)
+    const refKey = Object.keys(patch)[0];
+    const newLen = patch[refKey].length;
+
+    // Clamp activeMultiId
+    patch.activeMultiId = newLen > 0
+      ? Math.min(index, newLen - 1)
+      : 0;
+
+    return patch;
+  });
+}
+
+setIndexStates(updates = [], shift = true) {
+  this.setState(prev => {
+    if (!Array.isArray(updates) || updates.length === 0) return null;
+
+    // Helper: convert prevVal into a shallow-copied array
+    const makeArrayFromPrev = prevVal => {
+      if (Array.isArray(prevVal)) return prevVal.slice();
+      if (prevVal && typeof prevVal === 'object') {
+        // detect numeric keys -> build an array
+        const hasNumericKey = Object.keys(prevVal).some(k => String(Number(k)) === k);
+        if (hasNumericKey) {
+          const arr = [];
+          Object.keys(prevVal).forEach(k => {
+            const idx = Number(k);
+            if (!Number.isNaN(idx)) arr[idx] = prevVal[k];
+          });
+          return arr;
+        }
+        // non-numeric object -> not array-like
+        return null;
+      }
+      // single value -> place at index 0
+      if (typeof prevVal !== 'undefined') return [prevVal];
+      return [];
+    };
+
+    const arrMap = {}; // key -> resulting array (will be shallow-copies)
+    const explicitSet = {}; // key -> Set of indices explicitly updated in this call
+    const resultPatch = {}; // what we'll return at the end
+
+    // 1) Apply all explicit updates first, building arrMap
+    updates.forEach(({ key, index, value }) => {
+      if (typeof key === 'undefined' || typeof index === 'undefined') return;
+      index = Number(index);
+      if (!Number.isFinite(index) || index < 0) return;
+
+      if (!arrMap.hasOwnProperty(key)) {
+        arrMap[key] = makeArrayFromPrev(prev[key]) || [];
+      }
+
+      arrMap[key][index] = value;
+
+      if (!explicitSet[key]) explicitSet[key] = new Set();
+      explicitSet[key].add(index);
+    });
+
+    // 2) Possibly apply shifting behavior
+    // Determine which keys are eligible to shift: those present in defaultKeyframe, excluding 'multiALength'
+    const defaultKeys = new Set(Object.keys(this.defaultKeyframe || {}));
+    defaultKeys.delete('multiALength');
+
+    const shouldAttemptShift = Boolean(shift) && prev.impactFutureKeyframes === false;
+
+    if (shouldAttemptShift) {
+      // normalize multiALength lookup (allow array or object)
+      const makeLookup = prevVal => {
+        if (Array.isArray(prevVal)) return i => prevVal[i];
+        if (prevVal && typeof prevVal === 'object') {
+          return i => prevVal[String(i)];
+        }
+        return () => undefined;
+      };
+      const multiALookup = makeLookup(prev.multiALength);
+
+      // For each key we changed that is in defaultKeyframe, check next index
+      Object.keys(arrMap).forEach(key => {
+        if (!defaultKeys.has(key)) return; // only default transform keys shift
+        const indices = explicitSet[key];
+        if (!indices) return;
+
+        indices.forEach(idx => {
+          const nextIdx = idx + 1;
+
+          // if caller explicitly provided a value for nextIdx, skip shifting (explicit wins)
+          if (explicitSet[key] && explicitSet[key].has(nextIdx)) return;
+
+          // if there is no next keyframe (multiALength not defined for next), skip
+          const nextMultiLen = multiALookup(nextIdx);
+          if (typeof nextMultiLen === 'undefined' || Number(nextMultiLen) === 1) return;
+
+          // gather numeric old/current/future values from prev (fallback to 0)
+          // oldCurrent: prev[key][idx] (or object map) OR 0
+          let oldCurrent = 0;
+          if (prev[key] !== undefined) {
+            if (Array.isArray(prev[key])) oldCurrent = Number(prev[key][idx] ?? 0);
+            else if (prev[key] && typeof prev[key] === 'object') oldCurrent = Number(prev[key][String(idx)] ?? 0);
+            else oldCurrent = Number(prev[key] ?? 0);
+          }
+
+          const newCurrent = Number(arrMap[key][idx] ?? 0);
+
+          let prevFuture = 0;
+          if (prev[key] !== undefined) {
+            if (Array.isArray(prev[key])) prevFuture = Number(prev[key][nextIdx] ?? 0);
+            else if (prev[key] && typeof prev[key] === 'object') prevFuture = Number(prev[key][String(nextIdx)] ?? 0);
+            else prevFuture = 0;
+          }
+
+          const change = newCurrent - oldCurrent;
+          const newFuture = prevFuture - change;
+
+          // write into arrMap (overrides previous value only if there wasn't an explicit one)
+          arrMap[key][nextIdx] = newFuture;
+        });
+      });
+    }
+
+    // 3) Build patch from arrMap (convert arrays back to normal JS arrays)
+    Object.keys(arrMap).forEach(key => {
+      resultPatch[key] = arrMap[key];
+    });
+
+    // If nothing changed, abort
+    if (Object.keys(resultPatch).length === 0) return null;
+    return resultPatch;
+  });
+}
 
         // find simulator layers + active layer info
         getSimulatorLayers() {
@@ -1443,17 +1890,9 @@ document.addEventListener('keydown', (event) => {
             store.dispatch(revertTrackChanges());
         }
 
-        // After dispatching ADD_LAYER, call this to locate the new layer created with that name.
-        // It tries to pick the candidate within the same folder and closest to origIdx, excluding known IDs.
-        _findNewLayerCandidate(newName, folderId, origIdx, excludeIds = new Set()) {
+        findNewLayer(newName) {
             const layers = this.getSimulatorLayers();
-            const candidates = layers
-            .map((l, i) => ({ layer: l, idx: i }))
-            .filter(({ layer }) => layer.name === newName && layer.folderId === folderId && !excludeIds.has(layer.id));
-            if (!candidates.length) return null;
-            // choose candidate with index closest to origIdx (this helps if there are many similarly-named layers)
-            candidates.sort((a, b) => Math.abs(a.idx - origIdx) - Math.abs(b.idx - origIdx));
-            return candidates[0].layer;
+            return layers[layers.length - 1];
         }
 
         async copyAnimatedLayer(folderStartIndex, step) {
@@ -1475,27 +1914,18 @@ document.addEventListener('keydown', (event) => {
                 const base = (m && m[1]) ? m[1] : rest;
                 const num = (m && m[2]) ? m[2] : null;
 
-                const copyBase = `${base}${base ? " (Copy)" : "(Copy)"}`;
+                const copyBase = this._incrementName(base);
                 const newName = num ? `${colorPrefix}${copyBase}.${num}` : `${colorPrefix}${copyBase}`;
 
                 // dispatch addLayer
                 store.dispatch(addLayer(newName, orig.type));
 
-                let candidate = this._findNewLayerCandidate(newName, orig.folderId, item.idx, createdIds);
-                // fallback
-                if (!candidate) {
-                    const layers = this.getSimulatorLayers();
-                    candidate = layers.find(l => l.name === newName && l.id !== orig.id && !createdIds.has(l.id));
-                }
-                if (!candidate) {
-                    console.warn("Could not find newly created layer for name", newName);
-                    continue;
-                }
+                let newLayer = this.findNewLayer(newName);
 
                 const targetIndex = item.idx + 1;
-                store.dispatch(moveLayer(candidate.id, targetIndex));
+                store.dispatch(moveLayer(newLayer.id, targetIndex));
 
-                createdIds.add(candidate.id);
+                createdIds.add(newLayer.id);
             }
             store.dispatch(commitTrackChanges());
             store.dispatch(revertTrackChanges());
@@ -1956,8 +2386,8 @@ document.addEventListener('keydown', (event) => {
 
 
         async commitAFrames() {
-            const aLayers = Math.max(1, parseInt(this.state.aLayers, 10) || 1);
-            const aFramesVal = Math.max(1, parseInt(this.state.aFramesTemp, 10) || 1);
+            const aLayers = this.state.aLayers;
+            const aFramesVal = this.state.aFramesTemp;
 
             const desiredTotal = aLayers * aFramesVal;
             const folderLayers = this.getFolderLayers(); // returns [{layer, idx}, ...]
@@ -1965,9 +2395,6 @@ document.addEventListener('keydown', (event) => {
 
             // fast lookup for folder global positions
             const layersGlobal = this.getSimulatorLayers();
-
-            // helper to find candidate new layer after add (uses existing helper if present)
-            const createdIds = new Set();
 
             // If no change, still set state and return
             if (desiredTotal === currentTotal) {
@@ -1994,39 +2421,27 @@ document.addEventListener('keydown', (event) => {
                     // fallback if folder shorter than aLayers (very edge-case)
                     if (!base && folderLayers.length > 0) base = folderLayers[0].layer;
 
-                    // fallback defaults when folder empty entirely
-                    const colorPrefix = base ? (base.name || "").substring(0, 7) || "#000000" : "#000000";
-                    const parsedBase = base ? this.parseLayerName(base) : { displayName: "layer", number: null };
+                    const colorPrefix = (base.name || "").substring(0, 7) || "#000000";
+                    const parsedBase = this.parseLayerName(base);
                     const baseName = parsedBase.displayName || "layer";
-                    const type = base ? base.type : "Layer"; // fallback type
 
                     // build new layer name: color + baseName + '.' + frameNum
                     const newName = `${colorPrefix}${baseName}.${frameNum}`;
 
                     // dispatch add
-                    store.dispatch(addLayer(newName, type));
-
-                    // locate created layer (best-effort)
-                    let candidate = this._findNewLayerCandidate(newName, (base && base.folderId) || (folderLayers[0] && folderLayers[0].layer.folderId) || null, insertGlobalIndex, createdIds);
-                    if (!candidate) {
-                        // fallback: search by name in whole list excluding known ids
-                        const after = this.getSimulatorLayers();
-                        candidate = after.find(l => l.name === newName && !createdIds.has(l.id));
+                    store.dispatch(addLayer(newName));
+                    // rename the first layer if they're setting aFrames for the first time
+                    if (((currentTotal / aLayers) == 1) && (frameNum == 2)) {
+                    store.dispatch(renameLayer(base.id, `${colorPrefix}${baseName}.1`));
                     }
-                    if (!candidate) {
-                        console.warn("commitAFrames: could not find created layer for", newName);
-                        continue;
-                    }
+                    let newLayer = this.findNewLayer(newName);
+                    store.dispatch(moveLayer(newLayer.id, insertGlobalIndex));
 
-                    // move created layer to insertGlobalIndex (so it appears in folder order)
-                    store.dispatch(moveLayer(candidate.id, insertGlobalIndex));
-
-                    // update createdIds and bump insert index so next insert goes after it
-                    createdIds.add(candidate.id);
+                    // bump insert index so next insert goes after it
                     insertGlobalIndex += 1;
 
                     // also append to folderLayers to keep subsequent iterations consistent
-                    folderLayers.push({ layer: candidate, idx: insertGlobalIndex - 1 });
+                    folderLayers.push({ layer: newLayer, idx: insertGlobalIndex - 1 });
                 }
             } else {
                 // --- REMOVE layers if needed (confirm because destructive) ---
@@ -2150,7 +2565,7 @@ document.addEventListener('keydown', (event) => {
             }
 
             const newName = this.buildFolderLoopName(baseName, settings);
-            // dispatch rename (use your existing rename action)
+            // dispatch rename
             store.dispatch(renameFolder(folder.id, newName));
             store.dispatch(commitTrackChanges());
             store.dispatch(revertTrackChanges());
@@ -2288,14 +2703,13 @@ document.addEventListener('keydown', (event) => {
         }
 
 
-      setALength() {
+      setALength(inverse, move) {
             try {
                 const stateBefore = store.getState();
 
                 // get current player/frame index
                 const frameIndex = (getPlayerIndex(stateBefore) || 0);
 
-                // folder layers in render order (0..n-1)
                 const folderLayers = this.getFolderLayers();
                 if (!folderLayers || folderLayers.length === 0) return;
 
@@ -2321,15 +2735,32 @@ document.addEventListener('keydown', (event) => {
 
                 // compute new animation length value
                 const aLayers = this.state.aLayers;
-                const newALength = ((firstVisibleFolderIndex - this.state.layerOrigin + this.state.groupBegin) / aLayers) + 1
-                    this.setState({aLength: newALength});
-
+                let newALength = ((firstVisibleFolderIndex - this.state.layerOrigin + this.state.groupBegin) / aLayers) + 1
+                if (inverse) {
+                    newALength = (newALength * -1) + 2;
+                }
+                let keyframe = this.state.activeMultiId;
+                console.log("not move:", !move, "not first keyframe:", !(keyframe == 0), "final keyframe:", !((this.state.multiALength[keyframe + 1] ?? 1) > 1), "not greater than 1:", this.state.multiALength[keyframe + 1])
+                if (!move
+                    && !(this.state.multiALength[keyframe] == 1) // active keyframe is set
+                    && !(this.state.multiALength[keyframe + 1] > 1)) { // active keyframe is the final keyframe
+                    keyframe = keyframe + 1;
+                    this.setState({activeMultiId: keyframe});
+                }
+                newALength = newALength - sumOf(this.state.multiALength, keyframe - 1) + keyframe;
+                while (newALength < 1) {
+                    newALength = newALength + this.state.groupEnd - this.state.groupBegin + 1;
+                }
+                        this.setIndexStates([
+                            { key: 'multiALength', index: keyframe, value: newALength }
+                        ]);
+                    this.setState({inverse: inverse});
             } catch (err) {
                 console.warn("setALength error", err);
             }
         }
 
-        _incrementFolderName(name) {
+        _incrementName(name) {
             const loopMatch = name.match(/(\.loop.*)$/i);
             const loopPart = loopMatch ? loopMatch[1] : '';
             const base = loopPart ? name.slice(0, name.length - loopPart.length) : name;
@@ -2364,7 +2795,7 @@ document.addEventListener('keydown', (event) => {
                 const globalBefore = getLayersArray();
                 const folderLayerObj = globalBefore.find(l => String(l.id) === String(folderId));
                 const oldFolderName = (folderLayerObj && (folderLayerObj.name || folderLayerObj.title)) || (`folder_${folderId}`);
-                const newFolderName = this._incrementFolderName ? this._incrementFolderName(oldFolderName) : `${oldFolderName} (Copy)`;
+                const newFolderName = this._incrementName(oldFolderName);
 
                 const prevFolderIdx = globalBefore.findIndex(l => String(l.id) === String(folderId));
                 const beforeIds = new Set(globalBefore.map(l => String(l.id)));
@@ -2559,9 +2990,7 @@ getHotkeyValue(flatKey) {
 }
 
 onResetHotkey(flatKey) {
-  // reset to default: prefer this.defaults[flatKey] if available
-  const def = (this.defaults && this.defaults[flatKey]) ? this.defaults[flatKey] : '';
-  // note: setHotkeyValue will persist the reset
+  const def = (this.defaultHotkeys && this.defaultHotkeys[flatKey]) ? this.defaultHotkeys[flatKey] : '';
   this.setHotkeyValue(flatKey, def);
 }
 
@@ -2599,6 +3028,10 @@ const modifierKeys = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']);
     const newKeyStr = this.keyEventToString(e);
     this.setHotkeyValue(flatKey, newKeyStr);
     this.stopListeningForHotkey();
+
+    event.preventDefault(); // prevents default actions
+    event.stopImmediatePropagation(); // prevents other handlers on the same target
+    event.stopPropagation(); // extra safety for bubbling handlers
   };
 
   // Use capture so we reliably see the events before page handlers
@@ -2698,30 +3131,138 @@ stopListeningForHotkey() {
                     );
         }
 
-        renderSlider (key, props, title = null) {
-            if (!title) title = key;
-            props = {
-                ...props,
-                value: this.state[key],
-                onChange: e => props.min <= e.target.value && e.target.value <= props.max && this.setState({ [key]: parseFloatOrDefault(e.target.value) })
-            };
+renderSlider (k, props, title = null, multi = false, softBounds = false, onlyMaxSoft = false, scaleOffset = false) {
+    if (!title) title = k;
 
-            const rangeProps = {
-                ...props
-            };
-            const numberProps = {
-                ...props
-            };
-            return e("div", null,
-                     title,
-                     e("input", { style: { width: "4em" }, type: "number", ...numberProps }),
-                     e("input", { type: "range", ...rangeProps, onFocus: e => e.target.blur() }),
-                     e("button", { onClick: () => this.onReset(key) }, "⟳")
-                    );
+    const parseNum = v => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    };
+
+    // stored value from state (what we actually keep in state)
+    const rawStored = multi
+        ? (this.state[k] && this.state[k][this.state.activeMultiId]) ?? 0
+        : (this.state[k] ?? 0);
+
+    // displayed value = stored + offset (1 when scaleOffset)
+    const value = parseNum(rawStored) + (scaleOffset ? 1 : 0);
+
+    // stored bounds
+    const storedMin = ('min' in props) ? parseNum(props.min) : 0;
+    const storedMax = ('max' in props) ? parseNum(props.max) : 100;
+    const step = ('step' in props) ? parseNum(props.step) : 1;
+
+    // displayed bounds (what the user sees on the inputs)
+    const displayMin = storedMin + (scaleOffset ? 1 : 0);
+    const displayMax = storedMax + (scaleOffset ? 1 : 0);
+
+    // derive min/max fresh on each render (in displayed coordinates)
+    let renderMin = displayMin;
+    let renderMax = displayMax;
+    if (softBounds) {
+        if (!onlyMaxSoft) {
+            if (value < displayMin + step * 3) {
+                renderMin = value - step * 3;
+            }
         }
+        if (value > displayMax - step * 3) {
+            renderMax = value + step * 3;
+        }
+    }
+
+    const onChange = e => {
+        // e.target.value is the displayed value
+        const displayedNew = parseNum(e.target.value);
+
+        // convert back to stored value for validation + state
+        const storedNew = scaleOffset ? (displayedNew - 1) : displayedNew;
+
+        // enforce stored range when softBounds is off
+        if (!softBounds && !(storedMin <= storedNew && storedNew <= storedMax)) return;
+
+if (multi) {
+  this.setState(prev => {
+    const prevVal = prev[k];
+    let arr;
+
+    if (Array.isArray(prevVal)) {
+      arr = prevVal.slice();
+    } else if (prevVal && typeof prevVal === 'object') {
+      // convert object-like map into array (preserve numeric keys)
+      arr = [];
+      Object.keys(prevVal).forEach(key => {
+        const idxNum = Number(key);
+        if (!Number.isNaN(idxNum)) arr[idxNum] = prevVal[key];
+      });
+    } else if (typeof prevVal !== 'undefined') {
+      // single value -> put at index 0
+      arr = [prevVal];
+    } else {
+      arr = [];
+    }
+
+    const idx = Number.isInteger(prev.activeMultiId) ? prev.activeMultiId : 0;
+
+    // ensure numeric defaults
+    const oldCurrent = Number.isFinite(Number(arr[idx])) ? Number(arr[idx]) : 0;
+    const newCurrent = Number.isFinite(Number(storedNew)) ? Number(storedNew) : 0;
+
+    // set current keyframe value
+    arr[idx] = newCurrent;
+
+    const nextIdx = idx + 1;
+    const multiALenArr = prev.multiALength;
+    if (
+      prev.impactFutureKeyframes === false && // user requested no automatic impact
+      Array.isArray(multiALenArr) && // multiALength exists as array
+      typeof multiALenArr[nextIdx] !== 'undefined' && // next keyframe exists
+      Number(multiALenArr[nextIdx]) !== 1 // next keyframe's multiALength != 1
+    ) {
+      const prevFuture = Number.isFinite(Number(arr[nextIdx])) ? Number(arr[nextIdx]) : 0;
+      const change = newCurrent - oldCurrent; // positive if increased
+      const newFuture = prevFuture - change; // subtract the change
+      arr[nextIdx] = newFuture;
+    }
+
+    return { [k]: arr };
+  });
+} else {
+  this.setState({ [k]: storedNew });
+}
+
+    };
+
+    const numericProps = {
+        ...props,
+        // show the displayed value
+        value,
+        onChange,
+        // show displayed min/max
+        min: renderMin,
+        max: renderMax,
+        step
+    };
+
+    return e("div", null,
+        title,
+        e("input", { style: { width: "4em" }, type: "number", ...numericProps }),
+        e("input", { type: "range", ...numericProps, onFocus: e => e.target.blur() }),
+        e("button", { onClick: () => this.onReset(k, multi) }, "⟳")
+    );
+}
 
         renderSpacer(height = 8) {
             return e("div", { style: { height: `${height}px`, flex: "0 0 auto" } });
+        }
+        renderDivider(height = 1, color = "#ccc", margin = 8) {
+            return e("div", {
+                style: {
+                    height: `${height}px`,
+                    backgroundColor: color,
+                    margin: `${margin}px 0`,
+                    flex: "0 0 auto"
+                }
+            });
         }
 
 renderHotkey(flatKey, title = null) {
@@ -2744,7 +3285,7 @@ renderHotkey(flatKey, title = null) {
     background: editing ? '#f3f3f3' : 'white'
   };
 
-  return e('div', { style: { display: 'inline-block', margin: '0 .5em', verticalAlign: 'middle' } },
+  return e('div', null,
     e('span', null, title),
     e('button',
       {
@@ -2773,6 +3314,7 @@ renderHotkey(flatKey, title = null) {
             if (this.state.oInvisFrames && this.state.updateALot) {
                 this._onInvisStoreChange({ force: true })
             }
+
             const folder = this.getFolderLayers();
             const desired = this.computeLayerCountFromFolder(folder);
 
@@ -3136,10 +3678,19 @@ renderHotkey(flatKey, title = null) {
               && e(
                   "div",
                   { style: this.sectionBox },
-                  this.renderSlider("aLength", { min: 1, max: 500, step: 1 }, "Animation Length"),
+                        e("button", emojiButtonProps("Delete Keyframe", () => this.onDeleteKeyframe()), "➖"),
+                        e("button", emojiButtonProps("Previous Keyframe", () => this.setState({activeMultiId: Math.max(this.state.activeMultiId - 1, 0)})), "◀️"),
+                  `Keyframe #${this.state.activeMultiId + 1}`,
+                        e("button", emojiButtonProps("Next Keyframe", () => ((this.state.multiALength[this.state.activeMultiId]) !== 1) && this.setState({activeMultiId: (this.state.activeMultiId + 1)})), "▶️"),
+                  this.renderCheckbox("smoothMulti", "Keyframe Smoothing"),
+                  // this.renderCheckbox("smoothMultiEnds", "Smooth Start & End"),
+                  this.renderCheckbox("impactFutureKeyframes", "Impact Future Keyframes"),
+                  this.renderSpacer(),
+                  this.renderCheckbox("warpWidget", "Warp Transform Widget"),
+                  this.renderSpacer(),
+                  this.renderSlider("multiALength", { min: 1, max: 50, step: 1 }, "Animation Length", true, true, true),
                   this.renderCheckbox("inverse", "Animate Backwards"),
                   this.renderCheckbox("buildOffPrevFrame", "Build Off Previous Frame"),
-                  this.renderCheckbox("transformFinalFrame", "Transform End Frame"),
                   this.renderSpacer(),
                   this.renderCheckbox("editAnimation", "Edit Selected Animation"),
                   this.state.editAnimation
@@ -3150,23 +3701,31 @@ renderHotkey(flatKey, title = null) {
                   ),
                   this.renderSpacer(),
                   this.renderCheckbox("camLock", "Lock Animation to Camera"),
+                  !this.state.camLock
+                  && e(
+                      "div",
+                      null,
+                      this.renderSlider("parallax", { min: -1.4, max: 1.4, step: 0.01 }, "Parallax", false, true),
+                      ),
                   this.renderSpacer(),
-                  this.renderSlider("accel", { min: -10, max: 10, step: 0.1 }, "Accelerate"),
-                  this.renderSpacer(),
-                  this.renderSlider("nudgeXSmall", { min: -10, max: 10, step: 0.1 }, "Small Move X"),
-                  this.renderSlider("nudgeXBig", { min: -10000, max: 10000, step: 10 }, "Large Move X"),
-                  this.renderSlider("nudgeYSmall", { min: -10, max: 10, step: 0.1 }, "Small Move Y"),
-                  this.renderSlider("nudgeYBig", { min: -10000, max: 10000, step: 10 }, "Large Move Y"),
-                  this.renderSpacer(),
-                  this.renderSlider("scaleX", { min: 0, max: 3, step: 0.01 }, "Scale X"),
-                  this.renderSlider("scaleY", { min: 0, max: 3, step: 0.01 }, "Scale Y"),
-                  this.renderSlider("scale", { min: 0, max: 3, step: 0.01 }, "Scale"),
-                  this.renderCheckbox("scaleWidth", "Scale Width"),
-                  this.renderSpacer(),
-                  this.renderSlider("rotate", { min: -180, max: 180, step: 1 }, "Rotation"),
-                  this.renderSpacer(),
-                  this.renderCheckbox("flipX", "Flip X"),
-                  this.renderCheckbox("flipY", "Flip Y"),
+                  this.renderSection("transformations", "Main Transformations"),
+                  this.state.transformations
+                  && e(
+                      "div",
+                      { style: this.sectionBox },
+                      this.renderSlider("nudgeXSmall", { min: -10, max: 10, step: 0.1 }, "Small Move X", true, true),
+                      this.renderSlider("nudgeYSmall", { min: -10, max: 10, step: 0.1 }, "Small Move Y", true, true),
+                      this.renderSpacer(),
+                      this.renderSlider("scaleX", { min: -1, max: 2, step: 0.01 }, "Scale X", true, true, true, true),
+                      this.renderSlider("scaleY", { min: -1, max: 2, step: 0.01 }, "Scale Y", true, true, true, true),
+                      this.renderSlider("scale", { min: -1, max: 2, step: 0.01 }, "Scale", true, true, true, true),
+                      this.renderCheckbox("scaleWidth", "Scale Width"),
+                      this.renderSpacer(),
+                      this.renderSlider("rotate", { min: -180, max: 180, step: 1 }, "Rotation", true, true),
+                      this.renderSpacer(),
+                      this.renderCheckbox("flipX", "Flip X"),
+                      this.renderCheckbox("flipY", "Flip Y"),
+                  ),
                   this.renderSection("relativeTools", "Adjust Origin"),
                   this.state.relativeTools
                   && e(
@@ -3176,8 +3735,8 @@ renderHotkey(flatKey, title = null) {
                       this.renderSlider("alongPerspY", { min: -0.5, max: 0.5, step: 0.001 }, "Along Perspective Y"),
                       this.renderSlider("alongRot", { min: -180, max: 180, step: 1 }, "Along Rotation"),
                       this.renderSpacer(),
-                      this.renderSlider("anchorX", { min: -1, max: 1, step: 0.01 }, "Anchor X"),
-                      this.renderSlider("anchorY", { min: -1, max: 1, step: 0.01 }, "Anchor Y"),
+                      this.renderSlider("anchorX", { min: -1, max: 1, step: 0.01 }, "Anchor X", true, true),
+                      this.renderSlider("anchorY", { min: -1, max: 1, step: 0.01 }, "Anchor Y", true, true),
                   ),
                   this.renderSection("warpTools", "Warp Tools"),
                   this.state.warpTools
@@ -3187,13 +3746,13 @@ renderHotkey(flatKey, title = null) {
                       this.renderCheckbox("relativePersp", "Relative Perspective"),
                       this.renderSlider("perspClamping", { min: -10, max: 10, step: 0.01 }, "Perspective Clamping"),
                       this.renderSpacer(),
-                      this.renderSlider("perspX", { min: -5, max: 5, step: 0.01 }, "Perspective X"),
-                      this.renderSlider("perspY", { min: -5, max: 5, step: 0.01 }, "Perspective Y"),
+                      this.renderSlider("perspX", { min: -5, max: 5, step: 0.01 }, "Perspective X", true, true),
+                      this.renderSlider("perspY", { min: -5, max: 5, step: 0.01 }, "Perspective Y", true, true),
                       this.renderCheckbox("perspRotate", "Perspective 3D Rotate"),
-                      this.renderSlider("perspFocal", { min: 0, max: 1000, step: 1 }, "Z Distance"),
+                      this.renderSlider("perspFocal", { min: 0, max: 1000, step: 1 }, "Z Distance", false, true, true),
                       this.renderSpacer(),
-                      this.renderSlider("skewX", { min: -2, max: 2, step: 0.01 }, "Skew X"),
-                      this.renderSlider("skewY", { min: -2, max: 2, step: 0.01 }, "Skew Y"),
+                      this.renderSlider("skewX", { min: -2, max: 2, step: 0.01 }, "Skew X", true, true),
+                      this.renderSlider("skewY", { min: -2, max: 2, step: 0.01 }, "Skew Y", true, true),
                   ),
                   this.renderSection("randomness", "Randomness"),
                   this.state.randomness
@@ -3240,15 +3799,25 @@ renderHotkey(flatKey, title = null) {
                       "div",
                       { style: this.sectionBox },
                       this.renderHotkey("keyCommit", "Commit"),
-                      this.renderSpacer(),
+                      this.renderDivider(),
                       this.renderHotkey("keyManualUpdate", "Manual Update"),
-                      this.renderSpacer(),
-                      this.renderHotkey("keySetALength", "set Animation Length"),
-                      this.renderSpacer(),
+                      this.renderSpacer(4),
+                      this.renderHotkey("keyToggleManualUpdate", "Toggle Manual Update Mode"),
+                      this.renderDivider(),
                       this.renderHotkey("keyToggleOverlay", "Toggle Overlay"),
-                      this.renderSpacer(),
+                      this.renderDivider(),
+                      this.renderHotkey("keySetALength", "New Keyframe"),
+                      this.renderSpacer(4),
+                      this.renderHotkey("keySetALengthBackwards", "New Keyframe Backwards (Modifier)"),
+                      this.renderSpacer(4),
+                      this.renderHotkey("keyMoveALength", "Move Active Keyframe (Modifier)"),
+                      this.renderDivider(),
                       this.renderHotkey("keyResetTransform", "Reset Transform"),
-              ),
+                      this.renderDivider(),
+                      this.renderHotkey("keyPrevMultiTrans", "Previous Keyframe"),
+                      this.renderSpacer(4),
+                      this.renderHotkey("keyNextMultiTrans", "Next Keyframe"),
+                  ),
               ),
               e("button", { style: { float: "left" }, onClick: () => this.onCommit() }, "Commit"),
               e("button", { style: { float: "left" }, onClick: () => this.onResetAll() }, "Reset"),
@@ -3445,7 +4014,8 @@ function genBoundingBox(x1, y1, x2, y2, anchorX, anchorY, anchorSize, thickness,
     ];
 }
 
-function genBoundingBoxPoints(points, size, thickness, color, zIndex) {
+function genBoundingBoxPoints(points, size, thickness, zIndex) {
+    let color;
     let lines = [];
     let i = 0;
     for (let point of points) {
@@ -3454,6 +4024,13 @@ function genBoundingBoxPoints(points, size, thickness, color, zIndex) {
         let y1 = (point.y - size);
         let y2 = (point.y + size);
         i++;
+
+        if (point.id < 9 || point.id == 11) { // nine eleven reference
+            color = new Millions.Color(64, 128, 255, 255) // blue
+        } else {
+            color = new Millions.Color(255, 64, 255, 255) // purple
+        }
+
         lines.push(
             // Box outline
             genLine(x1, y1, x1, y2, thickness, color, zIndex + i + 0.1), // L
@@ -3478,6 +4055,12 @@ function getCameraPosAtFrame(frame, track) {
 
 function inBounds(p1, p2, r) {
     return Math.abs(p1.x - p2.x) < r && Math.abs(p1.y - p2.y) < r;
+}
+
+function sumOf(element, index = 999) {
+    return Object.entries(element ?? {})
+        .filter(([key]) => Number(key) <= index)
+        .reduce((acc, [, val]) => acc + (val ?? 0), 0);
 }
 
 // random from seed
