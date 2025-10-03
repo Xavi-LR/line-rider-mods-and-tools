@@ -1,9 +1,9 @@
 // ==UserScript==
 
-// @name         Layer Multiselect
+// @name         Layer Multi-select
 // @author       Xavi
 // @description  toggle editable/visible, edit color, move, delete, and group into new folder
-// @version      0.1.9
+// @version      0.2.0
 
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -174,25 +174,6 @@
         return panelEl;
     };
 
-    const chooseReversed = (candidatePs, layers) => {
-        if (!candidatePs || candidatePs.length === 0) return false;
-        let forward = 0, reversed = 0;
-        const n = Math.min(candidatePs.length, layers.length);
-        for (let i = 0; i < n; i++) {
-            try {
-                const cand = (candidatePs[i].textContent || '').trim();
-                const name = (layers[i].name || '').slice(7);
-                if (name && cand.includes(name)) forward++;
-            } catch {}
-            try {
-                const candR = (candidatePs[candidatePs.length - 1 - i].textContent || '').trim();
-                const nameR = (layers[i].name || '').slice(7);
-                if (nameR && candR.includes(nameR)) reversed++;
-            } catch {}
-        }
-        return reversed > forward;
-    };
-
     // ---- main render function (checkboxes & toolbar) ----
     const renderControls = () => {
         if (!findPanel()) return;
@@ -217,13 +198,10 @@
         if (candidatePs.length === 0) candidatePs = Array.from(document.querySelectorAll('p.jss13')).filter(n => !n.closest('.hover-control'));
         candidatePs = candidatePs.filter(p => (p.textContent || '').trim().length > 0);
 
-        // detect folder existence
-        const hasFolder = layers.some(l => l && l.type === 1);
+        // detect folder existence to decide orientation
+        const reversed = layers.some(l => l && l.type === 1);
 
-        // decide orientation
-        const reversed = hasFolder ? true : chooseReversed(candidatePs, layers);
-
-        const mappingRows = reversed ? candidatePs.slice().reverse() : candidatePs.slice();
+        const mappingRows = candidatePs.slice().reverse()
 
         // map by index if possible
         const rowMap = new Map();
@@ -317,7 +295,7 @@
             } catch {}
         }
 
-        // remove stale checkboxes
+        // remove stale checkboxes (a little broken)
         const allCbs = Array.from(document.querySelectorAll('.ms-checkbox'));
         for (const cb of allCbs) {
             const row = cb.closest ? cb.closest('div') : null;
