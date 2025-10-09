@@ -3,8 +3,8 @@
 // @namespace    https://www.linerider.com/
 // @author       Tobias Bessler, updated for blender by Xavi
 // @description  Export selected lines into an SVG, or JSON w/ proper origin point and optional layer automation
+// @version      1.3.0
 // @icon         https://www.linerider.com/favicon.ico
-// @version      1.2.0
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
 // @match        https://*.surge.sh/*
@@ -140,6 +140,25 @@ success: 0 };
       const exportSuccess = this.mod.onExport(this.state.useColor, this.state.useLayerAutomation, this.state.useJson);
       this.setState({ success: exportSuccess });
     }
+    onExportCamera() {
+    const track = store.getState().simulator.engine;
+    const positions = [];
+    const {width, height} = store.getState().camera.playbackDimensions || {width: 1920, height: 1080};
+
+    for(let i = 0; i < store.getState().player.maxIndex; i++) {
+        const zoom = window.getAutoZoom ? window.getAutoZoom(i) : store.getState().camera.playbackZoom;
+        const camera = store.getState().camera.playbackFollower.getCamera(track, { zoom, width, height }, i);
+        positions.push([camera.x, camera.y, zoom])
+    }
+    const link = document.createElement('a');
+    link.setAttribute('download', 'linerider_camera.json');
+    link.href = window.URL.createObjectURL(new Blob([JSON.stringify(positions)], {type: 'application/json'}));
+    document.body.appendChild(link);
+    window.requestAnimationFrame(function () {
+      link.dispatchEvent(new MouseEvent('click'));
+      document.body.removeChild(link);
+    });
+}
 
     render () {
       return e("div", null,
@@ -149,7 +168,8 @@ success: 0 };
           this.renderCheckbox("useJson", "JSON for Blender Export"),
           this.renderCheckbox("useColor", "Use Color"),
           this.renderCheckbox("useLayerAutomation", "Use Layer Automation"),
-          e("button", { style: { float: "left" }, onClick: () => this.onExport() }, "Export")
+          e("button", { style: { float: "left" }, onClick: () => this.onExport() }, "Export"),
+          this.state.useJson && e("button", { style: { float: "left" }, onClick: () => this.onExportCamera() }, "Export Camera"),
         ),
         e("button", { style: { backgroundColor: this.state.active ? "lightblue" : null }, onClick: this.onActivate.bind(this) }, "SVG Export Mod")
       );
