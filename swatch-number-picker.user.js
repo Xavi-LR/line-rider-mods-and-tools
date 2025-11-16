@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi
 // @description  width picker and a multiplier picker that works with my smooth pencil mod
-// @version      0.2.12
+// @version      0.2.14
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -133,37 +133,43 @@ function main() {
     onChooseWidth = val => this._setSceneryWidth(val)
     onChooseMultiplier = val => this._setMultiplier(val)
 
-    _onKeyDown(ev) {
-      if (ev.key !== "=" && ev.key !== "-") return
-      if (!(!getPlayerRunning(store.getState()) && getWindowFocused(store.getState()))) return
-      const el = document.activeElement
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return
-      ev.preventDefault()
-      const delta = ev.key === "=" ? 1 : -1
-      const lt = getSelectedLineType(store.getState())
-      if (lt === 2) this._stepWholeForScenery(delta)
-      else if (lt === 1) this._stepWholeForMultiplier(delta)
-    }
+_onKeyDown(ev) {
+  if (!(["=", "]", "-", "["].includes(ev.key))) return
+  if (!(!getPlayerRunning(store.getState()) && getWindowFocused(store.getState()))) return
+  const el = document.activeElement
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return
+  ev.preventDefault()
 
-    _stepWholeForScenery(deltaWhole) {
-      const current = typeof this.state.sceneryWidth === "number" ? this.state.sceneryWidth : window.selectedSceneryWidth
-      let newTotal = clampTotal(current + deltaWhole)
-      // if stepping would drop below 1.0, keep it at 1.0 (allow <1 only via decimal slider)
-      if (newTotal < 1.0) newTotal = 1.0
-      const sd = splitWholeDecimal(newTotal)
-      this._setSceneryWidth(newTotal)
-      this.setState({ widthWhole: sd.whole, widthDecimal: sd.decimal })
-    }
+  const lt = getSelectedLineType(store.getState())
+  const isWhole = (ev.key === "[" || ev.key === "]")
+  const delta = isWhole ? (ev.key === "]" ? 1 : -1) : (ev.key === "=" ? 0.1 : -0.1)
 
-    _stepWholeForMultiplier(deltaWhole) {
-      const current = typeof this.state.multiplier === "number" ? this.state.multiplier : window.selectedMultiplier
-      let newTotal = clampTotal(current + deltaWhole)
-      // if stepping would drop below 1.0, keep it at 1.0 (allow <1 only via decimal slider)
-      if (newTotal < 1.0) newTotal = 1.0
-      const sd = splitWholeDecimal(newTotal)
-      this._setMultiplier(newTotal)
-      this.setState({ accelWhole: sd.whole, accelDecimal: sd.decimal })
-    }
+  if (lt === 2) this._stepBy("scenery", delta)
+  else if (lt === 1) this._stepBy("multiplier", delta)
+}
+
+_stepBy(target, delta) {
+  const isScenery = target === "scenery"
+
+  const stateKey = isScenery ? "sceneryWidth" : "multiplier"
+  const setter = isScenery ? this._setSceneryWidth.bind(this) : this._setMultiplier.bind(this)
+  const wholeStateKey = isScenery ? "widthWhole" : "accelWhole"
+  const decimalStateKey = isScenery ? "widthDecimal" : "accelDecimal"
+
+  const current = typeof this.state[stateKey] === "number"
+    ? this.state[stateKey]
+    : (isScenery ? window.selectedSceneryWidth : window.selectedMultiplier)
+
+  let newTotal = clampTotal(current + delta)
+
+  const sd = splitWholeDecimal(newTotal)
+
+  setter(newTotal)
+  const set = {}
+  set[wholeStateKey] = sd.whole
+  set[decimalStateKey] = sd.decimal
+  this.setState(set)
+}
 
     renderSceneryControls() {
       const { widthWhole, widthDecimal, sceneryWidth } = this.state
