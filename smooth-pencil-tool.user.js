@@ -3,13 +3,11 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi
 // @description  Smooth Pencil but better
-// @version      0.2.1
+// @version      0.2.2
 // @icon         https://www.linerider.com/favicon.ico
-
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
 // @match        https://*.surge.sh/*
-
 // @downloadURL  http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/smooth-pencil-tool.user.js
 // @updateURL    http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/smooth-pencil-tool.user.js
 // @homepageURL  https://github.com/Xavi-LR/line-rider-mods-and-tools
@@ -50,7 +48,7 @@ function main() {
     width: 1,
     multiplier: 1,
     snapEnabled: true,
-    snapRadius: 1,
+    snapRadius: 0.6,
     random: 0,
     xy: false,
     crayon: false,
@@ -203,7 +201,7 @@ function main() {
       }
     }
 
-    _generateCrayonDots(x1, y1, x2, y2, dotsCount, dotWBase, spread, thicknessVariation, mult, type, flipped, folderLayerIds, randomColor, boomerang) {
+    _generateCrayonDots(x1, y1, x2, y2, dotsCount, dotWBase, spread, thicknessVariation, mult, type, flipped, multicolored, folderLayerIds, randomColor, boomerang) {
       const out = []
       const dxL = x2 - x1
       const dyL = y2 - y1
@@ -458,7 +456,21 @@ function main() {
               const folderLayerIds = getFolderLayerIds()
               if (crayonMode) {
                 const dots = Math.max(1, parseInt(getSetting('dots') ?? DEFAULTS.dots, 10))
-                const out = this._generateCrayonDots(this._lastPoint.x, this._lastPoint.y, found.point.x, found.point.y, dots, Math.max(0.01, Number(getSetting('dotThickness') ?? DEFAULTS.dotThickness)), Math.max(0, Number(getSetting('lineWidth') ?? DEFAULTS.lineWidth)), Math.max(0, Number(getSetting('thicknessVar') ?? DEFAULTS.thicknessVar)), multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, folderLayerIds, randomColor, boomerang)
+                const out = this._generateCrayonDots(
+                  this._lastPoint.x, this._lastPoint.y,
+                  found.point.x, found.point.y,
+                  dots,
+                  Math.max(0.01, Number(getSetting('dotThickness') ?? DEFAULTS.dotThickness)),
+                  Math.max(0, Number(getSetting('lineWidth') ?? DEFAULTS.lineWidth)),
+                  Math.max(0, Number(getSetting('thicknessVar') ?? DEFAULTS.thicknessVar)),
+                  multVal,
+                  getSelectedLineType(this.getState()),
+                  !!this._flipThisStroke,
+                  multicolored,
+                  folderLayerIds,
+                  randomColor,
+                  boomerang
+                )
                 if (out.length) dispatchSetLinesNoCommit(out)
               } else if (xyMode) {
                 const midX = found.point.x
@@ -474,7 +486,7 @@ function main() {
                 if (use_l2) out.push(this._makeLineObjLiteral(midX, midY, found.point.x, found.point.y, effectiveWidthVal, multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, folderLayerIds, multicolored, randomColor, boomerang))
                 if (out.length) dispatchSetLinesNoCommit(out)
               } else {
-                const lineObj = this._makeLineObjLiteral(this._lastPoint.x, this._lastPoint.y, found.point.x, found.point.y, effectiveWidthVal, multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, folderLayerIds, multicolored, randomColor, boomerang)
+                const lineObj = this._makeLineObjLiteral(this._lastPoint.x, this._lastPoint.y, found.point.x, found.point.y, effectiveWidthVal, multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, getFolderLayerIds(), multicolored, randomColor, boomerang)
                 dispatchSetLinesNoCommit([lineObj])
               }
 
@@ -598,8 +610,22 @@ function main() {
 
         if (crayonMode) {
           const out = []
-          if (use_l1) out.push(...this._generateCrayonDots(this._lastPoint.x, this._lastPoint.y, midX, midY, effectiveDots, baseDotThickness, lineWidth, thicknessVar, multVal, type, !!this._flipThisStroke, folderLayerIds, randomColor, boomerang))
-          if (use_l2) out.push(...this._generateCrayonDots(midX, midY, finalX, finalY, effectiveDots, baseDotThickness, lineWidth, thicknessVar, multVal, type, !!this._flipThisStroke, folderLayerIds, randomColor, boomerang))
+          if (use_l1) {
+              out.push(...this._generateCrayonDots(
+            this._lastPoint.x, this._lastPoint.y, midX, midY,
+            effectiveDots, baseDotThickness, lineWidth, thicknessVar,
+            multVal, type, !!this._flipThisStroke,
+            multicolored, folderLayerIds, randomColor, boomerang
+          ))
+          }
+          if (use_l2) {
+              out.push(...this._generateCrayonDots(
+            midX, midY, finalX, finalY,
+            effectiveDots, baseDotThickness, lineWidth, thicknessVar,
+            multVal, type, !!this._flipThisStroke,
+            multicolored, folderLayerIds, randomColor, boomerang
+          ))
+          }
           if (out.length === 0) return
           if (!safeDispatchAddNoCommit(out)) return
         } else {
@@ -614,7 +640,12 @@ function main() {
         if (segLen <= minLength) return
 
         if (crayonMode) {
-          const out = this._generateCrayonDots(this._lastPoint.x, this._lastPoint.y, finalX, finalY, effectiveDots, baseDotThickness, lineWidth, thicknessVar, multVal, type, !!this._flipThisStroke, folderLayerIds, randomColor, boomerang)
+          const out = this._generateCrayonDots(
+            this._lastPoint.x, this._lastPoint.y, finalX, finalY,
+            effectiveDots, baseDotThickness, lineWidth, thicknessVar,
+            multVal, type, !!this._flipThisStroke,
+            multicolored, folderLayerIds, randomColor, boomerang
+          )
           if (!safeDispatchAddNoCommit(out)) return
         } else {
           const lineObj = this._makeLineObjLiteral(this._lastPoint.x, this._lastPoint.y, finalX, finalY, effectiveWidthVal, multVal, type, !!this._flipThisStroke, null, folderLayerIds, multicolored, randomColor, boomerang)
