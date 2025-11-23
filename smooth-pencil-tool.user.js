@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Custom Smooth Pencil Tool
 // @namespace    https://www.linerider.com/
-// @author       Xavi
+// @author       Xavi & Tobias Bessler
 // @description  Smooth Pencil but better
-// @version      0.2.2
+// @version      0.3.0
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -42,6 +42,10 @@ function main() {
     : (window.SceneLayer || function () { return null })
 
   const DEFAULTS = {
+    paintBrush: false,
+bristles: 6,
+brushSpread: 0.4,
+brushThicknessJitter: 0.3,
     time: 0,
     length: 0.02,
     stabilizer: 0.8,
@@ -496,6 +500,7 @@ function main() {
           }
         }
       }
+      
 
       if (!e || typeof e.button === "undefined") {
         this._drawing = false
@@ -516,6 +521,42 @@ function main() {
       this._clearPreviewScene()
       this._flipThisStroke = false
     }
+
+    _generateBrushStrokes(x1, y1, x2, y2, count, spread, thicknessJitter, width, mult, type, flipped, folderLayerIds, multicolored, randomColor, boomerang) {
+    const out = [];
+
+    for (let i = 0; i < count; i++) {
+        // Uniform random angle
+        const angle = Math.random() * Math.PI * 2;
+        const r = Math.sqrt(Math.random()) * spread; // circular density
+        
+        // Offset vector
+        const ox = Math.cos(angle) * r;
+        const oy = Math.sin(angle) * r;
+
+        // Width variation
+        const w = Math.max(0.01, width * (1 + (Math.random()*2 - 1) * thicknessJitter));
+
+        // Add the "bristle"
+        out.push(
+            this._makeLineObjLiteral(
+                x1 + ox, y1 + oy,
+                x2 + ox, y2 + oy,
+                w,
+                mult,
+                type,
+                flipped,
+                null,
+                folderLayerIds,
+                multicolored,
+                randomColor,
+                boomerang
+            )
+        );
+    }
+    return out;
+}
+
 
     _maybeAddSegment() {
       if (this._detached) return
@@ -639,7 +680,31 @@ function main() {
         const segLen = Math.hypot(finalX - this._lastPoint.x, finalY - this._lastPoint.y)
         if (segLen <= minLength) return
 
-        if (crayonMode) {
+        const paintBrushMode = !!getSetting("paintBrush");
+
+        if (paintBrushMode) {
+            const bristles = Math.max(1, parseInt(getSetting("bristles") || 5));
+            const spread = Number(getSetting("brushSpread") || 0.3);
+            const jitter = Number(getSetting("brushThicknessJitter") || 0.2);
+
+            const out = this._generateBrushStrokes(
+                this._lastPoint.x, this._lastPoint.y,
+                finalX, finalY,
+                bristles,
+                spread,
+                jitter,
+                effectiveWidthVal,
+                multVal,
+                type,
+                !!this._flipThisStroke,
+                folderLayerIds,
+                multicolored,
+                randomColor,
+                boomerang
+            );
+
+            if (!safeDispatchAddNoCommit(out)) return;
+        } else if (crayonMode) {
           const out = this._generateCrayonDots(
             this._lastPoint.x, this._lastPoint.y, finalX, finalY,
             effectiveDots, baseDotThickness, lineWidth, thicknessVar,
@@ -768,11 +833,17 @@ function main() {
           this.renderCheckbox("xy", "XY"),
           this.renderSpacer(),
           this.renderCheckbox("crayon", "Crayon"),
-          this.state.crayon ? e("div", { key: "crayon-controls", style: { marginTop: "8px" } }, [
+          this.state.crayon ? e("div", { style: { marginTop: "8px" } }, [
             this.renderSlider("dots", { min: 1, max: 200, step: 1 }, "Dots"),
             this.renderSlider("lineWidth", { min: 0, max: 12, step: 0.1 }, "Line Width"),
             this.renderSlider("dotThickness", { min: 0.01, max: 4, step: 0.01 }, "Dot Thickness"),
             this.renderSlider("thicknessVar", { min: 0, max: 1, step: 0.01 }, "Thickness Variation")
+          ]) : null,
+          this.renderCheckbox("paintBrush", "Brush"),
+          this.state.paintBrush ? e("div", { style: { marginTop: "8px" } }, [
+            this.renderSlider("bristles", { min: 1, max: 20, step: 1 }, "Brush Bristles"),
+            this.renderSlider("brushSpread", { min: 0, max: 3, step: 0.05 }, "Brush Spread"),
+            this.renderSlider("brushThicknessJitter", { min: 0, max: 1, step: 0.01 }, "Thickness Jitter"),
           ]) : null,
           this.renderSpacer(),
           this.renderCheckbox("multicolored", "Multicolored"),
