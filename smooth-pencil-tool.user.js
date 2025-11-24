@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi & Tobias Bessler
 // @description  Smooth Pencil but better
-// @version      0.4.2
+// @version      0.4.3
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -114,7 +114,7 @@ function main() {
         return layers.filter(l => l.folderId === folderId).map(l => l.id);
     }
 
-    function dispatchSetLinesNoCommitRaw(lines) {
+    function dispatchSetLines(lines) {
         store.dispatch({
             type: 'UPDATE_LINES',
             payload: { linesToRemove: null, linesToAdd: lines, initialLoad: false },
@@ -337,6 +337,11 @@ function main() {
             }
         }
 
+    static get usesSwatches() { return true }
+    static getCursor(state) { return getPlayerRunning(state) ? "inherit" : "crosshair" }
+    static getSceneLayer(state) { return new SceneLayer(TOOL_LAYER) }
+    toTrackPos(p) { return super.toTrackPos(p) }
+
         _clearPreviewScene() {
             store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities([]) } })
         }
@@ -386,7 +391,7 @@ function main() {
                     if (typeof L._trueStartX === 'undefined') { L._trueStartX = L.x1; L._trueStartY = L.y1 }
                     if (typeof L._trueEndX === 'undefined') { L._trueEndX = L.x2; L._trueEndY = L.y2 }
                 }
-                dispatchSetLinesNoCommitRaw(lines)
+                dispatchSetLines(lines)
                 return
             }
             const count = Math.max(1, parseInt(getSetting('multidrawCount') || 1, 10))
@@ -544,7 +549,7 @@ function main() {
                     }
                 }
             }
-            if (out.length) dispatchSetLinesNoCommitRaw(out)
+            if (out.length) dispatchSetLines(out)
         }
 
         onPointerDown(e) {
@@ -680,7 +685,7 @@ function main() {
                                 if (this._dispatchLines) {
                                     this._dispatchLines([L], this._pressureAtLastPoint, lastPressure)
                                 } else {
-                                    dispatchSetLinesNoCommitRaw([L])
+                                    dispatchSetLines([L])
                                 }
                                 this._pressureAtLastPoint = lastPressure
                                 this._lastPoint = new V2({ x: fx, y: fy })
