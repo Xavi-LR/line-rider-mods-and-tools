@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      3.4.5
+// @version      3.5.2
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -265,508 +265,601 @@ _runTransform() {
     if (!this.state.manualSetBounds) {
       this.setBoundsAndStartLayer();
     }
-            let pretransformedLines = [...getLinesFromPoints(this.selectedPoints)]
-            .map(id => this.track.getLine(id))
-            .filter(l => l);
 
-            const initCamera = getCameraPosAtFrame(this.playerIndex, this.track);
-
-            this.state.finalFrameLines = [];
-            const posttransformedLines = [];
-            const startTime = performance.now();
-            const allLines = [];
-            const layersArray = getSimulatorLayers(this.store.getState());
-            let layerIndex = this.state.layerOrigin;
-            const inverse = this.state.inverse ? -1 : 1
-            const multiALength = sumOf(this.state.multiALength) - this.state.multiALength.length
-
-            const animLines = pretransformedLines.slice();
-            const lineLayers = new Map();
-            for (const line of animLines) {
-                const L = line.layer;
-                if (!lineLayers.has(L)) lineLayers.set(L, []);
-                lineLayers.get(L).push(line);
-            }
-      let multiKeyId = 0;
-      let multiI = 0;
-
-            for (let i = 0; i < multiALength; i++) { // animation frame loop
-            let aLength = this.state.multiALength[multiKeyId] - 1;
-                if (multiI == aLength) {
-                    multiKeyId = multiKeyId + 1;
-                    multiI = 0;
-                    aLength = this.state.multiALength[multiKeyId] - 1;
-                }
-                multiI++
-
-                layerIndex += 1 * this.state.aLayers * inverse;
-
-                if (layerIndex > this.state.groupEnd) {
-                    layerIndex = this.state.groupBegin;
-                }
-                if (layerIndex < this.state.groupBegin) {
-                    layerIndex = this.state.groupEnd - this.state.aLayers + 1;
-                }
-
-                if (this.state.editAnimation) {
-                    const minLayer = layerIndex;
-                    let maxLayer = layerIndex + this.state.aLayers - 1;
-                    const groupLength = this.state.groupEnd - this.state.groupBegin + 1
-                    while (maxLayer > this.state.groupEnd) {
-                        maxLayer = maxLayer - groupLength;
-                    }
-                    while (maxLayer < this.state.groupBegin) {
-                        maxLayer = maxLayer + groupLength;
-                    }
-                    maxLayer = maxLayer * multiALength
-
-                    const groupLines = [];
-                    for (let L = minLayer; L <= maxLayer; L++) {
-                        const arr = lineLayers.get(L);
-                        if (arr && arr.length) groupLines.push(...arr);
-                    }
-
-                    if (groupLines.length === 0) {
-                        pretransformedLines.length = 0;
-                        continue;
-                    }
-
-                    const idSet = new Set(groupLines.map(l => l.id));
-
-                    for (let j = pretransformedLines.length - 1; j >= 0; j--) {
-                        const line = pretransformedLines[j];
-                        if (!line || !idSet.has(line.id)) {
-                            pretransformedLines.splice(j, 1);
-                        }
-                    }
-                }
-                const progress = this.state.buildOffPrevFrame ? (1 / aLength) : (multiI / aLength);
-
-const multi = (transform, scale = false) => {
-
-  // segment endpoints (cumulative sums)
-  const startVal = (typeof sumOf(transform, multiKeyId - 1) !== 'undefined')
-      ? sumOf(transform, multiKeyId - 1) // - (multiKeyId * defaultVal)
-      : 0;
-  const delta = transform[multiKeyId] ?? 0;
-  const endVal = startVal + delta;
-
-  // preserve exact linear behavior when smoothing is off
-  if (!this.state.smoothMulti) {
-    return progress * delta + startVal;
-  }
-
-  // guard bad frame counts
-  if (!aLength || aLength <= 0) {
-    return progress * delta + startVal;
-  }
-
-  // neighbors exist
-  const prevExists = (typeof sumOf(transform, multiKeyId - 2) !== 'undefined');
-  const nextExists = (typeof sumOf(transform, multiKeyId + 1) !== 'undefined');
-
-  // build p0,p1,p2,p3 (p1=startVal, p2=endVal)
-  let p0 = prevExists ? sumOf(transform, multiKeyId - 2) : undefined;
-  let p3 = nextExists ? sumOf(transform, multiKeyId + 1) : undefined;
-
-  // if neighbor is missing and smoothMultiEnds is true, mirror the slope; otherwise leave undefined
-  if (typeof p0 === 'undefined' && this.state.smoothMultiEnds) {
-    p0 = startVal - (endVal - startVal);
-  }
-  if (typeof p3 === 'undefined' && this.state.smoothMultiEnds) {
-    p3 = endVal + (endVal - startVal);
-  }
-
-  // If there are no neighbors at all and ends should NOT be smoothed -> fallback linear
-  if (!prevExists && !nextExists && !this.state.smoothMultiEnds) {
-    return progress * delta + startVal;
-  }
-
-  // If still undefined, duplicate endpoints (safe fallback)
-  if (typeof p0 === 'undefined') p0 = startVal;
-  if (typeof p3 === 'undefined') p3 = endVal;
-
-  // --- time spacing (use adjacent segment frame counts) -------------------
-  // framesPrev: frames used by previous multiKeyId
-  const framesPrev = (multiKeyId - 1 >= 0)
-    ? Math.max(1, (this.state.multiALength[multiKeyId - 1] - 1))
-    : aLength;
-  const framesNext = (multiKeyId + 1 < this.state.multiALength.length)
-    ? Math.max(1, (this.state.multiALength[multiKeyId + 1] - 1))
-    : aLength;
-
-  // parameter times (in "frame" units). We place p1 at 0 and p2 at framesForSegment.
-  const t0 = -framesPrev;
-  const t1 = 0;
-  const t2 = aLength;
-  const t3 = aLength + framesNext;
-
-  // absolute time for current sample in the same units
-  const T = this.state.buildOffPrevFrame ? 1 : multiI;
-
-  // --- compute non-uniform Catmull-Rom tangents (converted to Hermite form) ---
-  // helper: safe division
-  const safeDiv = (num, den, fallback = 0) => (den === 0 ? fallback : (num / den));
-
-  // slope over current segment (used as fallback or when ends shouldn't be smoothed)
-  const slope = safeDiv(endVal - startVal, (t2 - t1), 0);
-
-  // m1: derivative at p1
-  let m1;
-  const denom1 = (t2 - t0);
-  if (denom1 !== 0) {
-    m1 = (
-      safeDiv((endVal - startVal), (t2 - t1), 0) * (t1 - t0) +
-      safeDiv((startVal - p0), (t1 - t0), 0) * (t2 - t1)
-    ) / denom1;
-  } else {
-    m1 = slope;
-  }
-
-  // m2: derivative at p2
-  let m2;
-  const denom2 = (t3 - t1);
-  if (denom2 !== 0) {
-    m2 = (
-      safeDiv((p3 - endVal), (t3 - t2), 0) * (t2 - t1) +
-      safeDiv((endVal - startVal), (t2 - t1), 0) * (t3 - t2)
-    ) / denom2;
-  } else {
-    m2 = slope;
-  }
-
-  // If a neighbor is missing AND smoothMultiEnds === false, force that tangent to produce linear
-  if (!prevExists && !this.state.smoothMultiEnds) m1 = slope;
-  if (!nextExists && !this.state.smoothMultiEnds) m2 = slope;
-
-  // --- Hermite interpolation between p1 (startVal) and p2 (endVal) ------------
-  // normalized s in [0,1] across the current segment (multiI from 1..framesForSegment)
-  const denomSegment = (t2 - t1);
-  const s = denomSegment !== 0 ? Math.max(0, Math.min(1, (T - t1) / denomSegment)) : 1.0;
-
-  const s2 = s * s;
-  const s3 = s2 * s;
-  const h00 = 2 * s3 - 3 * s2 + 1;
-  const h10 = s3 - 2 * s2 + s;
-  const h01 = -2 * s3 + 3 * s2;
-  const h11 = s3 - s2;
-
-  // tangents m1,m2 are derivatives wrt 't' (frame units), Hermite expects tangent scaled by (t2 - t1)
-  const value = h00 * startVal + h10 * m1 * (t2 - t1) + h01 * endVal + h11 * m2 * (t2 - t1);
-
-  return value;
-};
-
-
-                const nudgeX = multi(this.state.nudgeXSmall);
-                const nudgeY = multi(this.state.nudgeYSmall) * -1;
-
-                const nudge = new V2({
-                    x: nudgeX,
-                    y: nudgeY
-                });
-                const preBB = getBoundingBox(pretransformedLines);
-                const preCenter = new V2({
-                    x: preBB.x + 0.5 * preBB.width,
-                    y: preBB.y + 0.5 * preBB.height
-                });
-
-                const alongRot = this.state.alongRot * Math.PI / 180;
-                const preTransform = buildRotTransform(-alongRot);
-                const selectedLines = [];
-
-                const alongPerspX = multi(this.state.alongPerspX) * 0.01;
-                const alongPerspY = multi(this.state.alongPerspY) * 0.01;
-
-                for (let line of pretransformedLines) {
-                    const p1 = preparePointAlong(
-                        new V2(line.p1),
-                        preCenter, alongPerspX, alongPerspY, preTransform, this.state.perspRotate, this.state.perspFocal
-                    );
-                    const p2 = preparePointAlong(
-                        new V2(line.p2),
-                        preCenter, alongPerspX, alongPerspY, preTransform, this.state.perspRotate, this.state.perspFocal
-                    );
-                    selectedLines.push({ original: line, p1, p2 });
-                }
-
-                const bb = getBoundingBox(selectedLines);
-                bb.x = bb.x + nudge.x;
-                bb.y = bb.y + nudge.y;
-
-                const anchorX = multi(this.state.anchorX); //[multiKeyId] ?? 0;
-                const anchorY = multi(this.state.anchorY); //[multiKeyId] ?? 0;
-
-                const anchor = new V2({
-                    x: bb.x + (0.5 + anchorX) * bb.width,
-                    y: bb.y + (0.5 - anchorY) * bb.height
-                });
-
-                const postTransform = buildRotTransform(alongRot);
-
-                let perspX = multi(this.state.perspX);
-                let perspY = multi(this.state.perspY);
-                const rotate = multi(this.state.rotate);
-                const scale = multi(this.state.scale) + 1;
-                const scaleX = multi(this.state.scaleX) + 1;
-                const scaleY = multi(this.state.scaleY) + 1;
-                const skewX = multi(this.state.skewX);
-                const skewY = multi(this.state.skewY);
-
-                const transform = this.getTransform(rotate, scale, scaleX, scaleY, skewX, skewY);
-                const transformedLines = [];
-
-                const perspSafety = Math.pow(10, this.state.perspClamping);
-
-                if (this.state.relativePersp) {
-                    let perspXDenominator = bb.width * scale * scaleX;
-                    if (Math.abs(bb.width) < perspSafety) {
-                        perspXDenominator = perspSafety;
-                    }
-                    perspX = perspX / perspXDenominator;
-                    let perspYDenominator = bb.height * scale * scaleY;
-                    if (Math.abs(perspYDenominator) < perspSafety) {
-                        perspYDenominator = perspSafety;
-                    }
-                    perspY = perspY / perspYDenominator;
-                } else {
-                    perspX = 0.01 * perspX;
-                    perspY = 0.01 * perspY;
-                }
-                if (i == sumOf(this.state.multiALength, this.state.activeMultiId) - this.state.activeMultiId - 2) { // final frame of active keyframe
-                    this.drawBoundingBoxes(
-                        bb,
-                        anchor,
-                        transform,
-                        postTransform,
-                        alongPerspX,
-                        alongPerspY,
-                        preCenter,
-                    );
-                }
-
-                // map layer.id -> index (computed once per outer iteration)
-                const idToIndex = new Map(layersArray.map((l, i) => [l.id, i]));
-
-                // iterate with index so randomness uses per-line index
-                for (let lineIdx = 0; lineIdx < selectedLines.length; lineIdx++) {
-                    const line = selectedLines[lineIdx];
-
-                    // compute per-line random seeds and flags
-                    let baseId = Number(line.original.id) || 0;
-                    if (this.state.editAnimation) {
-                        // make each frame look at the same line id for each line in the selected animation so the random transforms stay consistent throughout each frame
-                        baseId = baseId % this.state.aLayers;
-                    }
-
-                    let shakeOffset = 0;
-                    let notFreeze = true;
-
-                    if (this.state.shake) {
-                        // Ensure interval is at least 1
-                        const interval = Math.max(1, Math.floor(this.state.shakeInterval || 1));
-                        const bucket = Math.ceil(i / interval);
-
-                        // previous frame's bucket (0 if this is the first frame)
-                        const prevFrameNum = Math.max(0, i - 1);
-                        const prevBucket = prevFrameNum === 0 ? 0 : Math.ceil(prevFrameNum / interval);
-                        shakeOffset = bucket * 1000;
-                        notFreeze = !this.state.shakeFreeze || (bucket !== prevBucket);
-                    } else {
-                        shakeOffset = 0;
-                        notFreeze = !this.state.shakeFreeze;
-                    }
-                    const seedBase = baseId + this.state.rSeed + shakeOffset;
-                    const accel = Math.pow((i + 1), this.state.rAccel);
-
-                    // random translation
-                    let extraNudgeX = 0;
-                    let extraNudgeY = 0;
-                    if (this.state.rMoveX !== 0 && notFreeze) {
-                        extraNudgeX = accel * progress * seedRandom(seedBase, this.state.rMoveX);
-                    }
-                    if (this.state.rMoveY !== 0 && notFreeze) {
-                        extraNudgeY = accel * progress * seedRandom(seedBase + 100, this.state.rMoveY);
-                    }
-                    const rNudge = new V2({ x: extraNudgeX, y: extraNudgeY });
-
-                    let scaleRandomX = 1;
-                    let scaleRandomY = 1;
-                    if (this.state.rScaleX !== 1 && notFreeze) {
-                        if (this.state.rScaleX > 1) {
-                            // random between 1 and rScaleX
-                            const rand01 = (seedRandom(seedBase + 200, 1) + 1) / 2;
-                            scaleRandomX = (1 + rand01 * (this.state.rScaleX - 1));
-                        } else {
-                            // random between rScaleX and 1
-                            const rand01 = (seedRandom(seedBase + 200, 1) + 1) / 2;
-                            scaleRandomX = (this.state.rScaleX + rand01 * (1 - this.state.rScaleX * progress));
-                        }
-                    }
-
-                    if (this.state.rScaleY !== 1 && notFreeze) {
-                        if (this.state.rScaleY > 1) {
-                            // random between 1 and rScaleY
-                            const rand01 = (seedRandom(seedBase + 300, 1) + 1) / 2;
-                            scaleRandomY = (1 + rand01 * (this.state.rScaleY - 1));
-                        } else {
-                            // random between rScaleY and 1
-                            const rand01 = (seedRandom(seedBase + 300, 1) + 1) / 2;
-                            scaleRandomY = (this.state.rScaleY + rand01 * (1 - this.state.rScaleY * progress));
-                        }
-                    }
-
-                    // random rotation
-                    let rotRandomRad = 0;
-                    if (this.state.rRotate !== 0 && notFreeze) {
-                        const rotDeg = accel * progress * seedRandom(seedBase + 400, this.state.rRotate);
-                        rotRandomRad = rotDeg * Math.PI / 180;
-                    }
-
-                    // translation
-                    const p1 = restorePoint(
-                        transformPersp(
-                            new V2(line.p1.add(nudge).add(rNudge)).sub(anchor).transform(transform),
-                            perspX, perspY, perspSafety, this.state.perspRotate, this.state.perspFocal
-                        ),
-                        anchor, postTransform, alongPerspX, alongPerspY, preCenter, this.state.perspRotate, this.state.perspFocal
-                    );
-
-                    const p2 = restorePoint(
-                        transformPersp(
-                            new V2(line.p2.add(nudge).add(rNudge)).sub(anchor).transform(transform),
-                            perspX, perspY, perspSafety, this.state.perspRotate, this.state.perspFocal
-                        ),
-                        anchor, postTransform, alongPerspX, alongPerspY, preCenter, this.state.perspRotate, this.state.perspFocal
-                    );
-
-                    // compute midpoint of this line (for per-line random scale/rotate)
-                    const mid = new V2({
-                        x: 0.5 * (p1.x + p2.x),
-                        y: 0.5 * (p1.y + p2.y)
-                    });
-
-                    // apply random scale/rotate if enabled
-                    if (scaleRandomX !== 1 || scaleRandomY !== 1 || rotRandomRad !== 0) {
-                        const applyScaleRotate = (pt) => {
-                            // move into midpoint-local space
-                            const local = pt.sub(mid);
-                            // scale
-                            let x = local.x * scaleRandomX;
-                            let y = local.y * scaleRandomY;
-                            // rotate around line midpoint
-                            if (rotRandomRad !== 0) {
-                                const cos = Math.cos(rotRandomRad);
-                                const sin = Math.sin(rotRandomRad);
-                                const rx = x * cos - y * sin;
-                                const ry = x * sin + y * cos;
-                                x = rx; y = ry;
-                            }
-                            return new V2({ x: x + mid.x, y: y + mid.y });
-                        };
-
-                        // replace p1/p2 with transformed versions
-                        const p1t = applyScaleRotate(p1);
-                        const p2t = applyScaleRotate(p2);
-                        // Assign back
-                        p1.x = p1t.x; p1.y = p1t.y;
-                        p2.x = p2t.x; p2.y = p2t.y;
-                    }
-
-                    // prepare jsonLine and determine target layer
-                    const jsonLine = line.original.toJSON();
-
-                    const originalLayerId = line.original.layer;
-                    const baseIndex = idToIndex.get(originalLayerId);
-                    let targetLayerId = originalLayerId;
-
-                    if (typeof baseIndex === "undefined") {
-//                        console.warn("Could not find base index for layer id:", originalLayerId);
-                    } else {
-                        const step = (layerIndex - this.state.layerOrigin);
-                        const targetIndex = baseIndex + step;
-
-                        if (targetIndex < 0 || targetIndex >= layersArray.length) {
-                            console.warn("Computed targetIndex out of bounds:", targetIndex);
-                        } else {
-                            targetLayerId = layersArray[targetIndex].id;
-                        }
-                    }
-
-                    const offset = { x: 0, y: 0 };
-                    if (this.state.camLock) {
-                        const camera = getCameraPosAtFrame(this.playerIndex + i, this.track); // i * (this.sixty ? 2 / 3 : 1)
-                        offset.x = camera.x - initCamera.x;
-                        offset.y = camera.y - initCamera.y;
-                    } else if (this.state.parallax !== 0) {
-                        const camera = getCameraPosAtFrame(this.playerIndex + i, this.track); // i * (this.sixty ? 2 / 3 : 1)
-                        offset.x = (camera.x - initCamera.x) * this.state.parallax;
-                        offset.y = (camera.y - initCamera.y) * this.state.parallax;
-                    }
-
-                    // compute width with potential random scale contribution (average of X/Y)
-                    const baseWidth = this.state.scaleWidth ? (jsonLine.width || 1) * Math.pow(scale, i + 1) : jsonLine.width;
-                    let widthWithRandom = baseWidth;
-                    if (scaleRandomX !== 1 || scaleRandomY !== 1) {
-                        const scaleAvg = (scaleRandomX + scaleRandomY) / 2;
-                        widthWithRandom = baseWidth * Math.pow(scaleAvg, i + 1);
-                    }
-
-                    let layerOffset = (baseIndex + (this.state.animationOffset * this.state.aLayers));
-
-                    // shift to be within animation group bounds
-                    const aBoundsLength = this.state.groupEnd - this.state.groupBegin + 1;
-                    while (layerOffset < (this.state.groupBegin - 1)) {
-                        layerOffset = layerOffset + aBoundsLength
-                    }
-
-                    while (layerOffset > (this.state.groupEnd - 1)) {
-                        layerOffset = layerOffset - aBoundsLength
-                    }
-
-                    transformedLines.push({
-                        ...jsonLine,
-                        layer: this.state.editAnimation ? layersArray[layerOffset].id : targetLayerId,
-                        id: this.state.editAnimation ? jsonLine.id : null,
-                        x1: p1.x + offset.x,
-                        y1: p1.y + offset.y,
-                        x2: p2.x + offset.x,
-                        y2: p2.y + offset.y,
-                        width: this.state.rScaleWidth ? widthWithRandom : baseWidth,
-                        type: 2
-                    });
-
-                    const newLine = Object.assign(Object.create(Object.getPrototypeOf(line.original)), line.original);
-                    newLine.p1 = p1;
-                    newLine.p2 = p2;
-                    posttransformedLines.push(newLine);
-                    if (this.state.selectFinalFrameOnCommit && i == multiALength - 1) {
-                        this.state.finalFrameLines.push(newLine);
-                    }
-                } // end per-line loop
-                // prepare for next iteration
-                if (this.state.buildOffPrevFrame) {
-                pretransformedLines = posttransformedLines.slice();
-                }
-                posttransformedLines.length = 0;
-
-                let endTime = performance.now();
-
-                if (endTime - startTime > (this.state.maxUpdateTime * 1000)) {
-                    console.error(`Time exception: Operation took longer than ${(this.state.maxUpdateTime * 1000)}ms to complete`);
-                    this.componentUpdateResolved = true;
-                    this.store.dispatch(revertTrackChanges());
-                    this.store.dispatch(setEditScene(new Millions.Scene()));
-                    return "Time";
-                }
-                this.store.dispatch(addLines(transformedLines));
-                this.state.allLines = allLines;
-            } // end of aLength loop
-                this.changed = true;
-        } finally {
-            this._transformInProgress = false;
-        }
+    const state = this.state;
+    const store = this.store;
+    const track = this.track;
+    const playerIndex = this.playerIndex;
+    const initCamera = getCameraPosAtFrame(playerIndex, track);
+
+    let pretransformedLines = [...getLinesFromPoints(this.selectedPoints)]
+      .map(id => this.track.getLine(id))
+      .filter(l => l);
+
+    state.finalFrameLines = [];
+    const posttransformedLines = [];
+    const startTime = performance.now();
+    const allLines = [];
+
+    const prevRememberedLines = state.rememberedLines;
+    state.rememberedLines = [];
+
+    const layersArray = getSimulatorLayers(store.getState());
+    let layerIndex = state.layerOrigin;
+    const inverse = state.inverse ? -1 : 1;
+    const multiALength = sumOf(state.multiALength) - state.multiALength.length;
+
+    const animLines = pretransformedLines.slice();
+    const lineLayers = new Map();
+    for (const line of animLines) {
+      const L = line.layer;
+      if (!lineLayers.has(L)) lineLayers.set(L, []);
+      lineLayers.get(L).push(line);
     }
+
+    // id -> index map is constant across frames, compute once
+    const idToIndex = new Map(layersArray.map((l, i) => [l.id, i]));
+
+    // ---------- Index prevRememberedLines by idx for O(1) lookups ----------
+    const prevRememberedMap = new Map();
+    if (prevRememberedLines && prevRememberedLines.length) {
+      for (let pl of prevRememberedLines) {
+        const arr = prevRememberedMap.get(pl.idx) || [];
+        arr.push(pl);
+        prevRememberedMap.set(pl.idx, arr);
+      }
+    }
+
+    // --- Build a compact signature for the *active* keyframe only ---
+    const activeId = state.activeMultiId;
+    const keysToCapture = [
+      'nudgeXSmall','nudgeYSmall','alongPerspX','alongPerspY',
+      'rotate','scale','scaleX','scaleY','skewX','skewY',
+      'anchorX','anchorY','perspX','perspY','alongRot',
+      'animatedAnchors','buildOffPrevFrame','relativePersp',
+      'perspClamping','perspRotate','perspFocal','parallax','camLock',
+      'randomness','rSeed','rMoveX','rMoveY','rRotate','rScaleX','rScaleY','rScaleWidth',
+      'shake','shakeInterval','shakeFreeze','scaleWidth',
+      'animationOffset','aLayers','groupBegin','groupEnd',
+      'smoothMulti','smoothMultiEnds','impactFutureKeyframes',
+      'updateWholeAnimation','toggleUpdateWholeAnimation',
+      'selectFinalFrameOnCommit','editAnimation'
+    ];
+
+    // cheap checksum of the selected lines (so changing selection forces recompute)
+    let selSum = 0;
+    if (pretransformedLines && pretransformedLines.length) {
+      for (let l of pretransformedLines) selSum += Number(l.id) || 0;
+    }
+
+    const sigParts = [];
+    sigParts.push('act:' + activeId);
+    sigParts.push('alen:' + (state.multiALength[activeId] ?? 0));
+    sigParts.push('sel:' + (pretransformedLines ? pretransformedLines.length : 0) + ':' + selSum);
+
+    for (const k of keysToCapture) {
+      const v = state[k];
+      if (v == null) {
+        sigParts.push(k + ':n');
+      } else if (Array.isArray(v)) {
+        sigParts.push(k + ':' + String(v[activeId] ?? ''));
+      } else if (typeof v === 'object') {
+        if (Object.prototype.hasOwnProperty.call(v || {}, activeId)) {
+          sigParts.push(k + ':' + String(v[activeId]));
+        } else {
+          try { sigParts.push(k + ':' + JSON.stringify(v)); } catch (e) { sigParts.push(k + ':' + String(v)); }
+        }
+      } else {
+        sigParts.push(k + ':' + String(v));
+      }
+    }
+
+    const activeSignature = sigParts.join('|');
+
+    // If signature matches previous run, and we have a remembered frame for every idx, reuse them
+    const prevActiveSignature = this._activeTransformSignature;
+    let canReuseAll = false;
+    if (prevActiveSignature === activeSignature && prevRememberedLines && prevRememberedLines.length) {
+      // ensure we have remembered results for every frame idx (0..multiALength-1)
+      canReuseAll = true;
+      for (let idx = 0; idx < multiALength; idx++) {
+        if (!prevRememberedMap.has(idx)) {
+          canReuseAll = false;
+          break;
+        }
+      }
+    }
+
+    if (canReuseAll) {
+      // Fast reuse: dispatch all frames from prevRememberedMap and set state.rememberedLines
+      for (let idx = 0; idx < multiALength; idx++) {
+        const arr = prevRememberedMap.get(idx) || [];
+        const cloned = arr.map(line => ({ ...line }));
+        if (cloned.length) {
+          store.dispatch(addLines(cloned));
+          state.rememberedLines.push(...cloned);
+        }
+      }
+      // nothing else required (we reused previous transforms for every frame)
+      state.updateWholeAnimation = false;
+      this.changed = true;
+      return;
+    }
+
+    // Else: do full computation and at the end store the activeSignature for future reuse
+    let multiKeyId = 0;
+    let multiI = 0;
+
+    for (let i = 0; i < multiALength; i++) {
+      let aLength = state.multiALength[multiKeyId] - 1;
+      if (multiI == aLength) {
+        multiKeyId = multiKeyId + 1;
+        multiI = 0;
+        aLength = state.multiALength[multiKeyId] - 1;
+      }
+      multiI++;
+
+      layerIndex += 1 * state.aLayers * inverse;
+
+      if (layerIndex > state.groupEnd) {
+        layerIndex = state.groupBegin;
+      }
+      if (layerIndex < state.groupBegin) {
+        layerIndex = state.groupEnd - state.aLayers + 1;
+      }
+
+      // fast-path reuse for certain unchanged segments (keeps original coarse guards)
+      if (!(
+        state.updateWholeAnimation || state.toggleUpdateWholeAnimation ||
+        multiKeyId == state.activeMultiId || multiKeyId == state.activeMultiId + 1 ||
+        (state.smoothMulti && (multiKeyId == state.activeMultiId - 1 || multiKeyId == state.activeMultiId + 2)) ||
+        (state.impactFutureKeyframes && (multiKeyId > state.activeMultiId))
+      )) {
+        // If prevRememberedMap had this idx (even if activeSignature changed), reuse that single frame
+        const arr = prevRememberedMap.get(i);
+        if (arr && arr.length) {
+          const cloned = arr.map(line => ({ ...line }));
+          store.dispatch(addLines(cloned));
+          state.rememberedLines.push(...cloned);
+          continue;
+        }
+      }
+
+      // If we get here we must do the full per-frame computation (same as before)
+
+      if (state.editAnimation) {
+        const minLayer = layerIndex;
+        let maxLayer = layerIndex + state.aLayers - 1;
+        const groupLength = state.groupEnd - state.groupBegin + 1;
+        while (maxLayer > state.groupEnd) {
+          maxLayer = maxLayer - groupLength;
+        }
+        while (maxLayer < state.groupBegin) {
+          maxLayer = maxLayer + groupLength;
+        }
+        maxLayer = maxLayer * multiALength;
+
+        const groupLines = [];
+        for (let L = minLayer; L <= maxLayer; L++) {
+          const arr = lineLayers.get(L);
+          if (arr && arr.length) groupLines.push(...arr);
+        }
+
+        if (groupLines.length === 0) {
+          pretransformedLines.length = 0;
+          continue;
+        }
+
+        const idSet = new Set(groupLines.map(l => l.id));
+
+        // filter pretransformedLines in-place (iterate backwards)
+        for (let j = pretransformedLines.length - 1; j >= 0; j--) {
+          const line = pretransformedLines[j];
+          if (!line || !idSet.has(line.id)) {
+            pretransformedLines.splice(j, 1);
+          }
+        }
+      }
+
+      const progress = state.buildOffPrevFrame ? (1 / aLength) : (multiI / aLength);
+
+      const multi = (transform, scale = false) => {
+        const startVal = (typeof sumOf(transform, multiKeyId - 1) !== 'undefined')
+          ? sumOf(transform, multiKeyId - 1)
+          : 0;
+        const delta = transform[multiKeyId] ?? 0;
+        const endVal = startVal + delta;
+
+        if (!state.smoothMulti) {
+          return progress * delta + startVal;
+        }
+
+        if (!aLength || aLength <= 0) {
+          return progress * delta + startVal;
+        }
+
+        const prevExists = state.smoothMultiEnds ? true : (typeof transform[multiKeyId - 1] !== 'undefined');
+        const nextExists = state.smoothMultiEnds ? true : (typeof transform[multiKeyId + 1] !== 'undefined');
+
+        let p0 = prevExists ? sumOf(transform, multiKeyId - 2) : undefined;
+        let p3 = nextExists ? sumOf(transform, multiKeyId + 1) : undefined;
+
+        if (!prevExists && !nextExists && !state.smoothMultiEnds) {
+          return progress * delta + startVal;
+        }
+
+        if (typeof p0 === 'undefined') p0 = startVal;
+        if (typeof p3 === 'undefined') p3 = endVal;
+
+        const framesPrev = (multiKeyId - 1 >= 0)
+          ? Math.max(1, (state.multiALength[multiKeyId - 1] - 1))
+          : aLength;
+        const framesNext = (multiKeyId + 1 < state.multiALength.length)
+          ? Math.max(1, (state.multiALength[multiKeyId + 1] - 1))
+          : aLength;
+
+        const t0 = -framesPrev;
+        const t1 = 0;
+        const t2 = aLength;
+        const t3 = aLength + framesNext;
+
+        const T = state.buildOffPrevFrame ? 1 : multiI;
+
+        const safeDiv = (num, den, fallback = 0) => (den === 0 ? fallback : (num / den));
+
+        const slope = safeDiv(endVal - startVal, (t2 - t1), 0);
+
+        let m1;
+        const denom1 = (t2 - t0);
+        if (denom1 !== 0) {
+          m1 = (
+            safeDiv((endVal - startVal), (t2 - t1), 0) * (t1 - t0) +
+            safeDiv((startVal - p0), (t1 - t0), 0) * (t2 - t1)
+          ) / denom1;
+        } else {
+          m1 = slope;
+        }
+
+        let m2;
+        const denom2 = (t3 - t1);
+        if (denom2 !== 0) {
+          m2 = (
+            safeDiv((p3 - endVal), (t3 - t2), 0) * (t2 - t1) +
+            safeDiv((endVal - startVal), (t2 - t1), 0) * (t3 - t2)
+          ) / denom2;
+        } else {
+          m2 = slope;
+        }
+
+        if (!prevExists && !state.smoothMultiEnds) m1 = slope;
+        if (!nextExists && !state.smoothMultiEnds) m2 = slope;
+
+        const denomSegment = (t2 - t1);
+        const s = denomSegment !== 0 ? Math.max(0, Math.min(1, (T - t1) / denomSegment)) : 1.0;
+
+        const s2 = s * s;
+        const s3 = s2 * s;
+        const h00 = 2 * s3 - 3 * s2 + 1;
+        const h10 = s3 - 2 * s2 + s;
+        const h01 = -2 * s3 + 3 * s2;
+        const h11 = s3 - s2;
+
+        const value = h00 * startVal + h10 * m1 * (t2 - t1) + h01 * endVal + h11 * m2 * (t2 - t1);
+
+        return value;
+      };
+
+      // --- Precompute multi(...) results used multiple times this frame ---
+      const multiCache = Object.create(null);
+      const getMulti = (key) => {
+        if (Object.prototype.hasOwnProperty.call(multiCache, key)) return multiCache[key];
+        const val = multi(state[key] ?? [], false);
+        multiCache[key] = val;
+        return val;
+      };
+
+      const nudgeX = getMulti('nudgeXSmall');
+      const nudgeY = getMulti('nudgeYSmall') * -1;
+      const alongPerspX = getMulti('alongPerspX') * 0.01;
+      const alongPerspY = getMulti('alongPerspY') * 0.01;
+      const rotateVal = getMulti('rotate');
+      const scaleVal = getMulti('scale') + 1;
+      const scaleXVal = getMulti('scaleX') + 1;
+      const scaleYVal = getMulti('scaleY') + 1;
+      const skewXVal = getMulti('skewX');
+      const skewYVal = getMulti('skewY');
+
+      // camera offset per-frame (compute once, reused per-line)
+      let frameCameraOffset = { x: 0, y: 0 };
+      if (state.camLock) {
+        const camera = getCameraPosAtFrame(playerIndex + i, track);
+        frameCameraOffset.x = camera.x - initCamera.x;
+        frameCameraOffset.y = camera.y - initCamera.y;
+      } else if (state.parallax !== 0) {
+        const camera = getCameraPosAtFrame(playerIndex + i, track);
+        frameCameraOffset.x = (camera.x - initCamera.x) * state.parallax;
+        frameCameraOffset.y = (camera.y - initCamera.y) * state.parallax;
+      }
+
+      const nudge = new V2({ x: nudgeX, y: nudgeY });
+
+      const preBB = getBoundingBox(pretransformedLines);
+      const preCenter = new V2({
+        x: preBB.x + 0.5 * preBB.width,
+        y: preBB.y + 0.5 * preBB.height
+      });
+
+      const alongRot = state.alongRot * Math.PI / 180;
+      const preTransform = buildRotTransform(-alongRot);
+
+      // build selectedLines once this frame
+      const selectedLines = [];
+      for (let line of pretransformedLines) {
+        const p1 = preparePointAlong(
+          new V2(line.p1),
+          preCenter, alongPerspX, alongPerspY, preTransform, state.perspRotate, state.perspFocal
+        );
+        const p2 = preparePointAlong(
+          new V2(line.p2),
+          preCenter, alongPerspX, alongPerspY, preTransform, state.perspRotate, state.perspFocal
+        );
+        selectedLines.push({ original: line, p1, p2 });
+      }
+
+      const bb = getBoundingBox(selectedLines);
+      bb.x = bb.x + nudge.x;
+      bb.y = bb.y + nudge.y;
+
+      const anchorX = state.animatedAnchors ? getMulti('anchorX') : (state.anchorX[multiKeyId] ?? 0);
+      const anchorY = state.animatedAnchors ? getMulti('anchorY') : (state.anchorY[multiKeyId] ?? 0);
+
+      const anchor = new V2({
+        x: bb.x + (0.5 + anchorX) * bb.width,
+        y: bb.y + (0.5 - anchorY) * bb.height
+      });
+
+      const postTransform = buildRotTransform(alongRot);
+
+      // compute perspX/Y once, and scale-related values
+      let perspX = getMulti('perspX');
+      let perspY = getMulti('perspY');
+      const transform = this.getTransform(rotateVal, scaleVal, scaleXVal, scaleYVal, skewXVal, skewYVal);
+      const transformedLines = [];
+
+      const perspSafety = Math.pow(10, state.perspClamping);
+
+      if (state.relativePersp) {
+        let perspXDenominator = bb.width * scaleVal * scaleXVal;
+        if (Math.abs(bb.width) < perspSafety) {
+          perspXDenominator = perspSafety;
+        }
+        perspX = perspX / perspXDenominator;
+        let perspYDenominator = bb.height * scaleVal * scaleYVal;
+        if (Math.abs(perspYDenominator) < perspSafety) {
+          perspYDenominator = perspSafety;
+        }
+        perspY = perspY / perspYDenominator;
+      } else {
+        perspX = 0.01 * perspX;
+        perspY = 0.01 * perspY;
+      }
+
+      if (i == sumOf(state.multiALength, state.activeMultiId) - state.activeMultiId - 2) { // final frame of active keyframe
+        this.drawBoundingBoxes(
+          bb,
+          anchor,
+          transform,
+          postTransform,
+          alongPerspX,
+          alongPerspY,
+          preCenter,
+        );
+      }
+
+      // iterate with index so randomness uses per-line index
+      for (let lineIdx = 0; lineIdx < selectedLines.length; lineIdx++) {
+        const line = selectedLines[lineIdx];
+
+        // compute per-line random seeds and flags
+        let baseId = Number(line.original.id) || 0;
+        if (state.editAnimation) {
+          baseId = baseId % state.aLayers;
+        }
+
+        let rotRandomRad = 0;
+        let extraNudgeX = 0;
+        let extraNudgeY = 0;
+        let scaleRandomX = 1;
+        let scaleRandomY = 1;
+
+        if (state.randomness) {
+          let shakeOffset = 0;
+          let notFreeze = true;
+
+          if (state.shake) {
+            const interval = Math.max(1, Math.floor(state.shakeInterval || 1));
+            const bucket = Math.ceil(i / interval);
+            const prevFrameNum = Math.max(0, i - 1);
+            const prevBucket = prevFrameNum === 0 ? 0 : Math.ceil(prevFrameNum / interval);
+            shakeOffset = bucket * 1000;
+            notFreeze = !state.shakeFreeze || (bucket !== prevBucket);
+          } else {
+            shakeOffset = 0;
+            notFreeze = !state.shakeFreeze;
+          }
+          const seedBase = baseId + state.rSeed + shakeOffset;
+
+          // Use cached multi values for the random parameters
+          const rMoveX = getMulti('rMoveX');
+          const rMoveY = getMulti('rMoveY');
+          const rRotate = getMulti('rRotate');
+          const rScaleX = getMulti('rScaleX') + 1;
+          const rScaleY = getMulti('rScaleY') + 1;
+
+          if (rMoveX !== 0 && notFreeze) {
+            extraNudgeX = seedRandom(seedBase, rMoveX);
+          }
+          if (rMoveY !== 0 && notFreeze) {
+            extraNudgeY = seedRandom(seedBase + 100, rMoveY);
+          }
+
+          if (rScaleX !== 1 && notFreeze) {
+            const rand01 = (seedRandom(seedBase + 200, 1) + 1) / 2;
+            scaleRandomX = rScaleX > 1 ? (1 + rand01 * (rScaleX - 1)) : (rScaleX + rand01 * (1 - rScaleX));
+          }
+
+          if (rScaleY !== 1 && notFreeze) {
+            const rand01 = (seedRandom(seedBase + 300, 1) + 1) / 2;
+            scaleRandomY = rScaleY > 1 ? (1 + rand01 * (rScaleY - 1)) : (rScaleY + rand01 * (1 - rScaleY));
+          }
+
+        if (rRotate !== 0 && notFreeze) {
+            const rotDeg = seedRandom(seedBase + 400, rRotate);
+            rotRandomRad = rotDeg * Math.PI / 180;
+          }
+        }
+
+        const rNudge = new V2({ x: extraNudgeX, y: extraNudgeY });
+
+        // translation (use the precomputed transform, perspX/Y, and offsets)
+        const p1 = restorePoint(
+          transformPersp(
+            new V2(line.p1.add(nudge).add(rNudge)).sub(anchor).transform(transform),
+            perspX, perspY, perspSafety, state.perspRotate, state.perspFocal
+          ),
+          anchor, postTransform, alongPerspX, alongPerspY, preCenter, state.perspRotate, state.perspFocal
+        );
+
+        const p2 = restorePoint(
+          transformPersp(
+            new V2(line.p2.add(nudge).add(rNudge)).sub(anchor).transform(transform),
+            perspX, perspY, perspSafety, state.perspRotate, state.perspFocal
+          ),
+          anchor, postTransform, alongPerspX, alongPerspY, preCenter, state.perspRotate, state.perspFocal
+        );
+
+        // compute midpoint of this line (for per-line random scale/rotate)
+        const mid = new V2({
+          x: 0.5 * (p1.x + p2.x),
+          y: 0.5 * (p1.y + p2.y)
+        });
+
+        // apply random scale/rotate if enabled
+        if (scaleRandomX !== 1 || scaleRandomY !== 1 || rotRandomRad !== 0) {
+          const cos = Math.cos(rotRandomRad);
+          const sin = Math.sin(rotRandomRad);
+
+          // applyScaleRotate inlined to avoid function creation per-line
+          const localApply = (pt) => {
+            const local = pt.sub(mid);
+            let x = local.x * scaleRandomX;
+            let y = local.y * scaleRandomY;
+            if (rotRandomRad !== 0) {
+              const rx = x * cos - y * sin;
+              const ry = x * sin + y * cos;
+              x = rx; y = ry;
+            }
+            return new V2({ x: x + mid.x, y: y + mid.y });
+          };
+
+          const p1t = localApply(p1);
+          const p2t = localApply(p2);
+          p1.x = p1t.x; p1.y = p1t.y;
+          p2.x = p2t.x; p2.y = p2t.y;
+        }
+
+        // prepare jsonLine and determine target layer
+        const jsonLine = line.original.toJSON();
+
+        const originalLayerId = line.original.layer;
+        const baseIndex = idToIndex.get(originalLayerId);
+        let targetLayerId = originalLayerId;
+
+        if (typeof baseIndex !== "undefined") {
+          const step = (layerIndex - state.layerOrigin);
+          const targetIndex = baseIndex + step;
+
+          if (targetIndex < 0 || targetIndex >= layersArray.length) {
+            console.warn("Computed targetIndex out of bounds:", targetIndex);
+          } else {
+            targetLayerId = layersArray[targetIndex].id;
+          }
+        }
+
+        // compute width with potential random scale contribution (average of X/Y)
+        const baseWidth = state.scaleWidth ? (jsonLine.width || 1) * Math.pow(scaleVal, i + 1) : jsonLine.width;
+        let widthWithRandom = baseWidth;
+        if (scaleRandomX !== 1 || scaleRandomY !== 1) {
+          const scaleAvg = (scaleRandomX + scaleRandomY) / 2;
+          widthWithRandom = baseWidth * Math.pow(scaleAvg, i + 1);
+        }
+
+        let layerOffset = (baseIndex + (state.animationOffset * state.aLayers));
+
+        // shift to be within animation group bounds
+        const aBoundsLength = state.groupEnd - state.groupBegin + 1;
+        while (layerOffset < (state.groupBegin - 1)) {
+          layerOffset = layerOffset + aBoundsLength;
+        }
+
+        while (layerOffset > (state.groupEnd - 1)) {
+          layerOffset = layerOffset - aBoundsLength;
+        }
+
+        transformedLines.push({
+          ...jsonLine,
+          layer: state.editAnimation ? layersArray[layerOffset].id : targetLayerId,
+          id: state.editAnimation ? jsonLine.id : null,
+          x1: p1.x + frameCameraOffset.x,
+          y1: p1.y + frameCameraOffset.y,
+          x2: p2.x + frameCameraOffset.x,
+          y2: p2.y + frameCameraOffset.y,
+          width: state.rScaleWidth ? widthWithRandom : baseWidth,
+          type: 2,
+          idx: i
+        });
+
+        const newLine = Object.assign(Object.create(Object.getPrototypeOf(line.original)), line.original);
+        newLine.p1 = p1;
+        newLine.p2 = p2;
+        posttransformedLines.push(newLine);
+        if (state.selectFinalFrameOnCommit && i == multiALength - 1) {
+          state.finalFrameLines.push(newLine);
+        }
+      } // end per-line loop
+
+      // prepare for next iteration
+      if (state.buildOffPrevFrame) {
+        pretransformedLines = posttransformedLines.slice();
+      }
+      posttransformedLines.length = 0;
+
+      let endTime = performance.now();
+
+      if (endTime - startTime > (state.maxUpdateTime * 1000)) {
+        console.error(`Time exception: Operation took longer than ${(state.maxUpdateTime * 1000)}ms to complete`);
+        this.componentUpdateResolved = true;
+        store.dispatch(revertTrackChanges());
+        store.dispatch(setEditScene(new Millions.Scene()));
+        return "Time";
+      }
+
+      // dispatch and save results (same as original)
+      store.dispatch(addLines(transformedLines));
+      state.rememberedLines.push(...transformedLines);
+      state.allLines = allLines;
+    } // end of animation frame loop
+
+    // Save signature for active keyframe for next run reuse
+    this._activeTransformSignature = activeSignature;
+
+    state.updateWholeAnimation = false;
+    this.changed = true;
+  } finally {
+    this._transformInProgress = false;
+  }
+}
+
     drawBoundingBoxes(bb, anchor, transform, postTransform, alongPerspX, alongPerspY, preCenter) {
         const zoom = getEditorZoom(this.store.getState());
         const preBox = genBoundingBox(
@@ -903,15 +996,54 @@ const multi = (transform, scale = false) => {
         // apply offset if no point is selected or if that point is selected
         const apply = (id) => (!p || p.id === id);
 
+        // compute offsets based on angle between opposite points
+        // pairs: 0<->4 (TL<->BR), 1<->5 (TM<->BM), 2<->6 (TR<->BL), 3<->7 (MR<->ML)
+        const computedOffsets = {}; // map id -> { xo, yo }
+
+        function computePairOffsets(aX, aY, aId, bX, bY, bId) {
+            // angle from A to B
+            const angle = Math.atan2(bY - aY, bX - aX);
+            const dx = Math.cos(angle) * o;
+            const dy = Math.sin(angle) * o;
+            // choose sign so A is moved away from B (A gets -dx,-dy), B moved away from A (B gets +dx,+dy)
+            computedOffsets[aId] = { xo: -dx, yo: -dy };
+            computedOffsets[bId] = { xo: dx, yo: dy };
+        }
+
+        // compute for all four opposite pairs
+        computePairOffsets(tlX0, tlY0, 0, brX0, brY0, 4);
+        computePairOffsets(tmX, tmY, 1, bmX, bmY, 5);
+        computePairOffsets(trX0, trY0, 2, blX0, blY0, 6);
+        computePairOffsets(mrX, mrY, 3, mlX, mlY, 7);
+
+        // helper to get offset (0 if not applied)
+        const getOffset = (id) => {
+            const off = computedOffsets[id] ?? { xo: 0, yo: 0 };
+            return {
+                xo: apply(id) ? off.xo : 0,
+                yo: apply(id) ? off.yo : 0,
+            };
+        };
+
+        // build points using computed offsets
+        const off0 = getOffset(0);
+        const off1 = getOffset(1);
+        const off2 = getOffset(2);
+        const off3 = getOffset(3);
+        const off4 = getOffset(4);
+        const off5 = getOffset(5);
+        const off6 = getOffset(6);
+        const off7 = getOffset(7);
+
         this.state.points = [
-            { id: 0, x: tlX0 + (apply(0) ? -o : 0), y: tlY0 + (apply(0) ? -o : 0), xo: -o, yo: -o }, // TL
-            { id: 1, x: tmX, y: tmY + (apply(1) ? -o : 0), xo: 0, yo: -o }, // TM
-            { id: 2, x: trX0 + (apply(2) ? o : 0), y: trY0 + (apply(2) ? -o : 0), xo: o, yo: -o }, // TR
-            { id: 3, x: mrX + (apply(3) ? o : 0), y: mrY, xo: o, yo: 0 }, // MR
-            { id: 4, x: brX0 + (apply(4) ? o : 0), y: brY0 + (apply(4) ? o : 0), xo: o, yo: o }, // BR
-            { id: 5, x: bmX, y: bmY + (apply(5) ? o : 0), xo: 0, yo: o }, // BM
-            { id: 6, x: blX0 + (apply(6) ? -o : 0), y: blY0 + (apply(6) ? o : 0), xo: -o, yo: o }, // BL
-            { id: 7, x: mlX + (apply(7) ? -o : 0), y: mlY, xo: -o, yo: 0 }, // ML
+            { id: 0, x: tlX0 + off0.xo, y: tlY0 + off0.yo, xo: off0.xo, yo: off0.yo }, // TL
+            { id: 1, x: tmX + off1.xo, y: tmY + off1.yo, xo: off1.xo, yo: off1.yo }, // TM
+            { id: 2, x: trX0 + off2.xo, y: trY0 + off2.yo, xo: off2.xo, yo: off2.yo }, // TR
+            { id: 3, x: mrX + off3.xo, y: mrY + off3.yo, xo: off3.xo, yo: off3.yo }, // MR
+            { id: 4, x: brX0 + off4.xo, y: brY0 + off4.yo, xo: off4.xo, yo: off4.yo }, // BR
+            { id: 5, x: bmX + off5.xo, y: bmY + off5.yo, xo: off5.xo, yo: off5.yo }, // BM
+            { id: 6, x: blX0 + off6.xo, y: blY0 + off6.yo, xo: off6.xo, yo: off6.yo }, // BL
+            { id: 7, x: mlX + off7.xo, y: mlY + off7.yo, xo: off7.xo, yo: off7.yo }, // ML
         ];
 
         if (this.state.activePoint?.id !== 8) {
@@ -939,8 +1071,9 @@ const multi = (transform, scale = false) => {
         const pointBoxes = genBoundingBoxPoints(this.state.points, POINT_SIZE / zoom, 1 / zoom, 1);
         const boxes = this.state.advancedTools ? [...preBox, ...postBox, ...pointBoxes] : [...postBox, ...pointBoxes];
         this.state.renderBB = boxes;
-        const sceneEntities = this.state.renderOverlay ? [...boxes, ...this.state.renderOverlay] : boxes;
-        this.store.dispatch(setEditScene(Millions.Scene.fromEntities(sceneEntities)));
+        if (this.state.renderOverlay.length == 0) {
+        this.store.dispatch(setEditScene(Millions.Scene.fromEntities(boxes)));
+        }
     }
 
     getTransform (rotate, scale, multiScaleX, multiScaleY, skewX, skewY) {
@@ -1039,6 +1172,9 @@ function _updateTransLoop() {
     if (this.state && !this.state.manualUpdateMode) {
       this.state.transUpdated = true;
         this.mod.onUpdate();
+            if (this.state.oInvisFrames && this.state.updateALot) {
+                this._onInvisStoreChange({ force: true })
+            }
     }
   } catch (err) {
     console.error('_updateTransLoop error', err);
@@ -1071,6 +1207,9 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
     if (this.state.manualUpdateMode) {
       this.state.transUpdated = true;
       this.mod.onUpdate();
+            if (this.state.oInvisFrames && this.state.updateALot) {
+                this._onInvisStoreChange({ force: true })
+            }
     }
   } else if (keyStr.includes(this.state.keySetALength)) {
     if (this.state.active) {
@@ -1107,18 +1246,18 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
   } else if (keyStr === this.state.keyToggleManualUpdate) {
     console.log("toggled manual");
     if (this.state.manualUpdateMode) {
-          this.setState({manualUpdateMode: false, updateALot: true});
+          this.setState({manualUpdateMode: false});
       } else {
-          this.setState({manualUpdateMode: true, updateALot: false});
+          this.setState({manualUpdateMode: true});
       }
   }
 }, true);
             this.defaultKeyframe = {
                 nudgeXSmall: 0,
                 nudgeYSmall: 0,
-                scaleX: 0,
-                scaleY: 0,
-                scale: 0,
+                scaleX: 0, // shows as 1
+                scaleY: 0, // shows as 1
+                scale: 0, // shows as 1
                 rotate: 0,
                 anchorX: 0,
                 anchorY: 0,
@@ -1126,11 +1265,15 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 perspY: 0,
                 skewX: 0,
                 skewY: 0,
+
+                rMoveX: 0,
+                rMoveY: 0,
+                rScaleX: 0, // shows as 1
+                rScaleY: 0, // shows as 1
+                rRotate: 0,
             };
             this.defaults = {
                 // === Animation Tools (animTools) ===
-                animTools: true,
-
                 manualSetBounds: false,
                 groupBegin: 0,
                 groupEnd: 0,
@@ -1172,6 +1315,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 buildOffPrevFrame: false,
                 editAnimation: false,
                 animationOffset: 0,
+                animatedAnchors: true,
                 camLock: false,
                 parallax: 0,
 
@@ -1191,26 +1335,21 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 perspFocal: 100,
 
                 // === Randomness (randomness) ===
-                rAccel: 0,
                 shake: false,
                 shakeInterval: 1,
                 shakeFreeze: false,
                 rSeed: 0,
-                rMoveX: 0,
-                rMoveY: 0,
-                rScaleX: 1,
-                rScaleY: 1,
                 rScaleWidth: false,
-                rRotate: 0,
 
                 // === Performance & Commit (performance) ===
+                toggleUpdateWholeAnimation: false,
                 manualUpdateMode: false,
                 maxUpdateTime: 5,
 
                 scaleMax: 10,
 
                 selectFinalFrameOnCommit: true,
-                resetALengthOnCommit: false,
+                resetAnimationOnCommit: false,
             };
             this.defaultMainHotkeys = {
                 // these keys' custom values prevent other event with those key combos when the mod is active
@@ -1218,7 +1357,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 keyManualUpdate: "Enter",
                 keySetALength: "I",
                 keyToggleOverlay: "V",
-                keyResetTransform: "Alt+Z",
+                keyResetTransform: "Shift+T",
                 keyPrevMultiTrans: "ArrowDown",
                 keyNextMultiTrans: "ArrowUp",
                 keyToggleManualUpdate: "Ctrl+M"
@@ -1235,8 +1374,9 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 active: false,
                 numLayers: getSimulatorLayers(store.getState()).length,
 
+                animTools: true,
                 folderSettings: false,
-                aLayersSection: true,
+                aLayersSection: false,
                 transTools: false,
                 transformations: false,
                 relativeTools: false,
@@ -1252,6 +1392,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 renderOverlay: [],
                 renderBB: [],
                 allLines: [],
+                rememberedLines: [],
             };
 
             this.mod = new AnimateMod(store, this.state);
@@ -1286,7 +1427,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                     return { x: ev.clientX, y: ev.clientY };
                 };
                 this._onDocPointerDown = (ev) => {
-                    const fakeDown = { button: _computeButton(ev), pos: this._eventToPos(ev), _originalEvent: ev};
+                    const fakeDown = { button: _computeButton(ev), pos: this._eventToPos(ev), _originalEvent: ev, alt: isAltDown, ctrl: isCtrlDown, shift: isShiftDown};
                     this.onPointerDown(fakeDown);
                     this._draggingPointerId = ev.pointerId;
                     if (!this._onDocPointerMove) {
@@ -1335,34 +1476,60 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
         onPointerDown(e) {
             const pos = DefaultTool.prototype.toTrackPos.call(this._toolCtx, e.pos);
             const multiId = this.state.activeMultiId;
+            const radius = POINT_RADIUS / getEditorZoom(store.getState()) / 2;
 
+            // find the index of the closest point that is also in bounds
+            let bestIndex = -1;
+            let bestDistSq = Infinity;
             for (let i = 0; i < this.state.points.length; i++) {
-                if (inBounds(pos, this.state.points[i], POINT_RADIUS / getEditorZoom(store.getState()) / 2)) {
-                    if (e.button === 2) {
-                        console.log("deleting keyframe");
-                        this.onDeleteKeyframe();
-                        return;
+                const p = this.state.points[i];
+                if (inBounds(pos, p, radius)) {
+                    const dx = pos.x - p.x;
+                    const dy = pos.y - p.y;
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq < bestDistSq) {
+                        bestDistSq = distSq;
+                        bestIndex = i;
                     }
-                    const id = this.state.points[i].id;
-                    if (id == 9) {
-                        this.state.activePoint = { id: id, x: (this.state.midpoint.x), y: (this.state.midpoint.y) };
-                    } else if (id == 10) {
-                        const zoom = getEditorZoom(store.getState());
-                        const tl = this.state.points[0];
-                        const skewPX = (tl.x - tl.xo) - 80 / zoom;
-                        const skewPY = (tl.y - tl.yo) - 80 / zoom;
-                        this.state.activePoint = { id: id, x: skewPX, y: skewPY};
-                    } else if (id == 11) {
-                        this.state.activePoint = { id: id, x: (this.state.midpoint.x - (this.state.nudgeXSmall[multiId] ?? 0)), y: (this.state.midpoint.y + (this.state.nudgeYSmall[multiId] ?? 0)) };
-                    } else {
-                        this.state.activePoint = this.state.points[i];
-                    }
-
-                    const selectedPoints = getSelectToolState(store.getState()).selectedPoints;
-                    this.setState({ selectedPoints: selectedPoints });
-                    return;
                 }
             }
+            if (bestIndex === -1) return;
+
+            const i = bestIndex;
+            if (e.button === 2) {
+                if (e.ctrl) {
+                    console.log("reseting keyframe to animation origin");
+                    this.onResetTransform(true);
+                    return;
+                }
+                if (e.shift) {
+                    console.log("reseting keyframe");
+                    this.onResetTransform();
+                    return;
+                }
+                console.log("deleting keyframe");
+                this.onDeleteKeyframe();
+                return;
+            }
+
+            const id = this.state.points[i].id;
+            if (id == 9) {
+                this.state.activePoint = { id: id, x: (this.state.midpoint.x), y: (this.state.midpoint.y) };
+            } else if (id == 10) {
+                const zoom = getEditorZoom(store.getState());
+                const tl = this.state.points[0];
+                const skewPX = (tl.x - tl.xo) - 80 / zoom;
+                const skewPY = (tl.y - tl.yo) - 80 / zoom;
+                this.state.activePoint = { id: id, x: skewPX, y: skewPY};
+            } else if (id == 11) {
+                this.state.activePoint = { id: id, x: (this.state.midpoint.x - (this.state.nudgeXSmall[multiId] ?? 0)), y: (this.state.midpoint.y + (this.state.nudgeYSmall[multiId] ?? 0)) };
+            } else {
+                this.state.activePoint = this.state.points[i];
+            }
+
+            const selectedPoints = getSelectToolState(store.getState()).selectedPoints;
+            this.setState({ selectedPoints: selectedPoints });
+            return;
         }
         onPointerDrag(e) {
             if (this.state.activePoint) {
@@ -1571,6 +1738,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
         componentWillUpdate (nextProps, nextState) {
             let error = this.mod.onUpdate(nextState);
             if (error) {
+                this.state.renderBB = [];
                 this.setState({ active: false });
             }
         }
@@ -1615,33 +1783,37 @@ onReset (key, multi = false) {
             this.setState({ ...this.defaults });
         }
 
-        onResetTransform () {
+        onResetTransform (toOrigin = false) {
             const index = this.state.activeMultiId;
             const defaults = this.defaultKeyframe || {};
 
             const updates = Object.keys(defaults).map(key => ({
                 key,
                 index,
-                value: defaults[key]
+                value: toOrigin ? defaults[key] - sumOf(this.state[key], index - 1) : defaults[key] // fix the "key" part of sumOf
             }));
 
             this.setIndexStates(updates);
         }
 
         onCommit () {
-            if (this.state.resetALengthOnCommit) {
-                this.state.multiALength = [1];
+            if (this.state.resetAnimationOnCommit) {
+                this.setState({
+                    ...this.defaultKeyframe,
+                    multiALength : [1],
+                    activeMultiId: 0
+                });
             }
             this.mod.commit();
             if (!this.state.selectFinalFrameOnCommit) {
-                this.setState({
-                    // ...this.defaults,
-                    active: false
-                });
+                this.state.renderBB = [];
+                this.setState({ active: false });
             }
         }
 
 onDeleteKeyframe () {
+  this.state.updateWholeAnimation = true;
+
   const index = this.state.activeMultiId;
   if (typeof index !== 'number' || index < 0) return; // guard
 
@@ -2219,28 +2391,43 @@ setIndexStates(updates = [], shift = true) {
                 if (!force && !this.state.oInvisFrames) return;
 
                 const stateBefore = store.getState();
-
-                // current frame
                 const frameIndex = (getPlayerIndex(stateBefore) || 0);
 
                 // throttle by frame unless forced
                 if (!force && this._lastInvisFrame === frameIndex) return;
                 this._lastInvisFrame = frameIndex;
 
-                const editorPos = getEditorCamPos(stateBefore);
-                const allLines = unsafeWindow.Selectors.getSimulatorLines(store.getState()) || [];
+                // grab single copy of simulator lines (avoid repeated calls)
+                const allLines = unsafeWindow.Selectors.getSimulatorLines(stateBefore) || [];
 
-                // filter nearby lines to not lag as much
+                // fast proximity test (manual loop avoids creating many closures)
                 const radius = 300;
                 const radiusSq = radius * radius;
-                const nearLines = allLines.filter(line => {
-                    if (!line || !line.p1 || !line.p2) return false;
+                const editorPos = getEditorCamPos(stateBefore);
+                const nearLines = [];
+                for (let i = 0; i < allLines.length; ++i) {
+                    const line = allLines[i];
+                    if (!line || !line.p1 || !line.p2) continue;
                     const dx1 = line.p1.x - editorPos.x, dy1 = line.p1.y - editorPos.y;
                     const dx2 = line.p2.x - editorPos.x, dy2 = line.p2.y - editorPos.y;
-                    return (dx1*dx1 + dy1*dy1) <= radiusSq || (dx2*dx2 + dy2*dy2) <= radiusSq;
-                });
+                    if (dx1*dx1 + dy1*dy1 <= radiusSq || dx2*dx2 + dy2*dy2 <= radiusSq) {
+                        nearLines.push(line);
+                    }
+                }
 
-                // layers, maps and helpers
+                // if nothing nearby, skip renderer update
+                if (nearLines.length === 0 && !this.state.renderBB) {
+                    // clear overlay if it isn't already empty
+                    if (this.state.renderOverlay && this.state.renderOverlay.length) {
+                        this.state.renderOverlay = [];
+                        try {
+                            store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities([]) } });
+                        } catch (err) { /* ignore */ }
+                    }
+                    return;
+                }
+
+                // layers, maps, helpers
                 const layersArr = this.getSimulatorLayers();
                 const idToIndex = new Map(layersArr.map((l, idx) => [l.id, idx]));
                 if (typeof getLayerVisibleAtTime !== "function") {
@@ -2248,9 +2435,10 @@ setIndexStates(updates = [], shift = true) {
                     return;
                 }
 
-                // cache visibility now per layer
+                // cache visibility now per layer (cheap, layersArr usually small)
                 const visibleNow = new Map();
-                for (const l of layersArr) {
+                for (let i = 0; i < layersArr.length; ++i) {
+                    const l = layersArr[i];
                     try {
                         visibleNow.set(l.id, !!getLayerVisibleAtTime(l.id, frameIndex));
                     } catch (e) {
@@ -2265,125 +2453,181 @@ setIndexStates(updates = [], shift = true) {
                 let p = parseFloat(this.state.opacity);
                 if (!Number.isFinite(p)) p = 1;
                 p = Math.max(0, Math.min(1, p));
+                const oInverse = !!this.state.oInverse;
 
-                // compute original weight for a layer (1 = original color, 0 = white/skip)
-                const computeOriginalWeight = (layerId) => {
-                    if (visibleNow.get(layerId)) return 1;
-                    if (!oPrev) return p;
+                // --- Precompute weight + blended color per layer to avoid repeating per-line ---
+                const layerWeightCache = new Map(); // layerId -> weight (0..1)
+                const layerColorCache = new Map();  // layerId -> Millions.Color
+                const layerById = new Map(layersArr.map((l) => [l.id, l]));
 
-                    for (let d = 1; d <= framesLen; ++d) {
-                        const t = this.state.oInverse ? frameIndex + d : frameIndex - d;
-                        if (t < 0) continue;
-                        try {
-                            if (getLayerVisibleAtTime(layerId, t)) {
-                                const scale = 1 - (d - 1) / framesLen; // 1 .. 1/framesLen
-                                return p * scale;
+                for (let i = 0; i < layersArr.length; ++i) {
+                    const l = layersArr[i];
+                    const lid = l.id;
+
+                    // compute original weight (same logic as your computeOriginalWeight)
+                    let weight;
+                    if (visibleNow.get(lid)) {
+                        weight = 1;
+                    } else if (!oPrev) {
+                        weight = p;
+                    } else {
+                        weight = 0;
+                        for (let d = 1; d <= framesLen; ++d) {
+                            const t = oInverse ? frameIndex + d : frameIndex - d;
+                            if (t < 0) continue;
+                            try {
+                                if (getLayerVisibleAtTime(lid, t)) {
+                                    const scale = 1 - (d - 1) / framesLen; // 1 .. 1/framesLen
+                                    weight = p * scale;
+                                    break;
+                                }
+                            } catch (e) {
+                                weight = p;
+                                break;
                             }
-                        } catch (e) {
-                            return p;
                         }
                     }
-                    return 0;
-                };
+                    layerWeightCache.set(lid, weight);
 
-                // --- build a list of entries to sort deterministically, then assign unique z per sorted index ---
-                const layerById = new Map(layersArr.map((l, idx) => [l.id, l]));
-                const lineEntries = [];
-                let encounteredCounter = 0;
-
-                for (const line of nearLines) {
-                    const lid = line.layer;
-                    if (typeof lid === "undefined" || lid === null) continue;
-
-                    const origWeight = computeOriginalWeight(lid);
-                    if (!origWeight) continue;
-
-                    // color calculation (same as before)
-                    const layerObj = layerById.get(lid) || null;
-                    const hex = layerObj && (layerObj.name || "").substring(0,7);
+                    // compute blended color for layer (cache the blended Millions.Color)
+                    // use same hex logic you had; if name missing fallback to white
+                    const hex = l && (l.name || "").substring(0, 7);
                     const rgb = this._hexToRgb(hex) || { r: 255, g: 255, b: 255 };
-                    const whiten = Math.max(0, Math.min(1, 1 - origWeight));
+                    const whiten = Math.max(0, Math.min(1, 1 - weight));
                     const blendToWhite = (component) => Math.round(component * (1 - whiten) + 255 * whiten);
                     const blendedR = blendToWhite(rgb.r);
                     const blendedG = blendToWhite(rgb.g);
                     const blendedB = blendToWhite(rgb.b);
-                    const color = new Millions.Color(blendedR, blendedG, blendedB, 255);
+                    // store the color object once
+                    layerColorCache.set(lid, new Millions.Color(blendedR, blendedG, blendedB, 255));
+                }
+
+                // --- Build entries (only for nearLines and only if layer weight > 0) ---
+                const lineEntries = [];
+                let encounteredCounter = 0;
+
+                for (let i = 0; i < nearLines.length; ++i) {
+                    const line = nearLines[i];
+                    const lid = line.layer;
+                    if (typeof lid === "undefined" || lid === null) continue;
+
+                    const origWeight = layerWeightCache.get(lid) || 0;
+                    if (!origWeight) continue;
+
+                    const color = layerColorCache.get(lid) || new Millions.Color(255, 255, 255, 255);
 
                     let thickness = ((line.width && line.width > 0) ? line.width : 1) * 2;
+
                     const p1 = { x: line.p1.x, y: line.p1.y, colorA: color, colorB: color, thickness };
                     const p2 = { x: line.p2.x, y: line.p2.y, colorA: color, colorB: color, thickness };
 
-                    // layer order tie-breaker
                     const layerIdx = (typeof idToIndex.get(lid) === "number") ? idToIndex.get(lid) : 0;
 
-                    // stable tie key: prefer numeric/string line.id if present, otherwise a deterministic encounteredCounter
-                    const tieKey = (typeof line.id === "number" || typeof line.id === "string") ? String(line.id) : `__enc${encounteredCounter++}`;
+                    // stable tie key: reuse numeric if possible to allow numeric comparison
+                    let tieKey = null;
+                    let tieNum = NaN;
+                    if (typeof line.id === "number") {
+                        tieKey = String(line.id);
+                        tieNum = Number(line.id);
+                    } else if (typeof line.id === "string") {
+                        const maybeNum = Number(line.id);
+                        if (!Number.isNaN(maybeNum) && String(maybeNum) === line.id) tieNum = maybeNum;
+                        tieKey = line.id;
+                    } else {
+                        tieKey = `__enc${encounteredCounter++}`;
+                        // tieNum remains NaN
+                    }
 
-                    lineEntries.push({ line, lid, layerIdx, whiten, p1, p2, thickness, color, tieKey });
+                    // store whiten for sorting
+                    const whiten = Math.max(0, Math.min(1, 1 - origWeight));
+
+                    lineEntries.push({ p1, p2, layerIdx, whiten, tieKey, tieNum });
                 }
 
-                // Comparator:
-                // 1) whiten descending (more-white first so visible / less-white ends up with higher z)
-                // 2) layerIdx ascending (lower layer index drawn earlier, higher index on top if same whiten)
-                // 3) tieKey (line.id if available, otherwise encountered counter) to guarantee a total order
+                // add selected-tool highlights if needed (compute once)
+                if (this.state.oSelected) {
+                    const selectToolState = getToolState(unsafeWindow.store.getState(), SELECT_TOOL);
+                    if (selectToolState && selectToolState.selectedPoints) {
+                        // build set of line ids from points
+                        const getLineIdsFromPoints = (points) => {
+                            const set = new Set();
+                            for (const pt of points) set.add(pt >> 1);
+                            return set;
+                        };
+                        const lineIdsSet = getLineIdsFromPoints(selectToolState.selectedPoints);
+
+                        // find matching lines from allLines (not only nearLines) - but only add those actually present
+                        for (let i = 0; i < allLines.length; ++i) {
+                            const ln = allLines[i];
+                            if (!ln || typeof ln.id === "undefined") continue;
+                            if (!lineIdsSet.has(ln.id)) continue;
+                            // add highlight line
+                            const colorSel = new Millions.Color(0, 230, 255, 255);
+                            const thickness = 0.5;
+                            const p1 = { x: ln.p1.x, y: ln.p1.y, colorA: colorSel, colorB: colorSel, thickness };
+                            const p2 = { x: ln.p2.x, y: ln.p2.y, colorA: colorSel, colorB: colorSel, thickness };
+                            lineEntries.push({ p1, p2, layerIdx: 1e6, whiten: -1, tieKey: `sel${ln.id}`, tieNum: Number(ln.id) });
+                        }
+                    }
+                }
+
+                // If nothing to draw after filtering, possibly clear and exit
+                if (lineEntries.length === 0 && !(this.state.renderBB && this.state.renderBB.length)) {
+                    if (this.state.renderOverlay && this.state.renderOverlay.length) {
+                        this.state.renderOverlay = [];
+                        try {
+                            store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities([]) } });
+                        } catch (err) { /* ignore */ }
+                    }
+                    return;
+                }
+
+                // sort entries - comparator simplified but equivalent to your logic
                 const EPS = 1e-12;
                 lineEntries.sort((a, b) => {
                     if (Math.abs(a.whiten - b.whiten) > EPS) return b.whiten - a.whiten; // more white first
                     if (a.layerIdx !== b.layerIdx) return a.layerIdx - b.layerIdx; // lower layer first
-                    // try numeric compare when both look numeric
-                    const an = Number(a.tieKey), bn = Number(b.tieKey);
-                    const anIsNum = !Number.isNaN(an) && String(an) === a.tieKey;
-                    const bnIsNum = !Number.isNaN(bn) && String(bn) === b.tieKey;
-                    if (anIsNum && bnIsNum) return an - bn;
+                    const anIsNum = Number.isFinite(a.tieNum);
+                    const bnIsNum = Number.isFinite(b.tieNum);
+                    if (anIsNum && bnIsNum) return a.tieNum - b.tieNum;
                     if (a.tieKey < b.tieKey) return -1;
                     if (a.tieKey > b.tieKey) return 1;
                     return 0;
                 });
 
-                if (this.state.oSelected) {
-                    const selectToolState = getToolState(unsafeWindow.store.getState(), SELECT_TOOL);
-                    if (selectToolState && selectToolState.selectedPoints) {
-                        const allLines = unsafeWindow.Selectors.getSimulatorLines(store.getState());
-                        function getLineIdsFromPoints(points) {
-                            return new Set([...points].map(point => point >> 1));
-                        }
-                        let lineIds = [];
-                        lineIds = [...getLineIdsFromPoints(selectToolState.selectedPoints)];
-                        const matchingLines = allLines.filter(line => lineIds.includes(line.id));
-                        const colorSel = new Millions.Color(0, 230, 255, 255);
-                        let thickness = 0.5;
-                        for (let line of matchingLines) {
-                            const p1 = { x: line.p1.x, y: line.p1.y, colorA: colorSel, colorB: colorSel, thickness };
-                            const p2 = { x: line.p2.x, y: line.p2.y, colorA: colorSel, colorB: colorSel, thickness };
-                            lineEntries.push({p1, p2});
-                        }
-                    }
-                }
-
-                // assign unique z indices based on the sorted order
-                const sceneEntities = [];
+                // create Millions.Line entities and set z index
+                const sceneEntities = new Array(lineEntries.length + (this.state.renderBB ? this.state.renderBB.length : 0));
                 for (let i = 0; i < lineEntries.length; ++i) {
                     const e = lineEntries[i];
                     const zIndex = i;
                     const lineEntity = new Millions.Line(e.p1, e.p2, 1, zIndex);
                     lineEntity.z = zIndex;
-                    sceneEntities.push(lineEntity);
+                    sceneEntities[i] = lineEntity;
                 }
+
+                // append any renderBB entries at the end (as before)
+                if (this.state.renderBB && this.state.renderBB.length) {
+                    let offset = lineEntries.length;
+                    for (let i = 0; i < this.state.renderBB.length; ++i) {
+                        sceneEntities[offset + i] = this.state.renderBB[i];
+                    }
+                }
+
+                // store and dispatch once
                 this.state.renderOverlay = sceneEntities;
-                const allSceneEntities = this.state.renderBB ? [...sceneEntities, ...this.state.renderBB] : sceneEntities;
                 try {
-                    store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities(allSceneEntities) } });
+                    store.dispatch({ type: "SET_RENDERER_SCENE", payload: { key: "edit", scene: Millions.Scene.fromEntities(sceneEntities) } });
                 } catch (err) {
                     console.warn("error setting renderer scene:", err);
                 }
             }; // end schedule()
+
             if (typeof unsafeWindow !== "undefined" && typeof unsafeWindow.requestAnimationFrame === "function") {
                 unsafeWindow.requestAnimationFrame(schedule);
             } else {
                 setTimeout(schedule, 0);
             }
         }
-
 
         async commitAFrames() {
             const aLayers = this.state.aLayers;
@@ -2698,9 +2942,23 @@ setIndexStates(updates = [], shift = true) {
                 this._oInvisUnsub = null;
                 this._lastInvisFrame = null;
             }
-            // clear the edit scene so those overlay lines disappear
+
+            // immediate clear (keeps original behavior)
             store.dispatch(setEditScene(new Millions.Scene()));
+
+            // run a fresh scene a couple frames later
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    try {
+                        this.setState({renderOverlay: [] });
+                        store.dispatch(setEditScene(new Millions.Scene()));
+                    } catch (e) {
+                        console.warn('delayed setEditScene failed', e);
+                    }
+                });
+            });
         }
+
 
 
       setALength(inverse, move) {
@@ -2740,7 +2998,6 @@ setIndexStates(updates = [], shift = true) {
                     newALength = (newALength * -1) + 2;
                 }
                 let keyframe = this.state.activeMultiId;
-                console.log("not move:", !move, "not first keyframe:", !(keyframe == 0), "final keyframe:", !((this.state.multiALength[keyframe + 1] ?? 1) > 1), "not greater than 1:", this.state.multiALength[keyframe + 1])
                 if (!move
                     && !(this.state.multiALength[keyframe] == 1) // active keyframe is set
                     && !(this.state.multiALength[keyframe + 1] > 1)) { // active keyframe is the final keyframe
@@ -3076,7 +3333,7 @@ stopListeningForHotkey() {
             const props = {
                 id: key,
                 checked: this.state[key],
-                onChange: e => this.setState({ [key]: e.target.checked }),
+                onChange: e => (key == "smoothMulti" || "smoothMultiEnds") ? this.setState({ [key]: e.target.checked, updateWholeAnimation: true }) : this.setState({ [key]: e.target.checked }),
             };
             return e(
                 "div",
@@ -3311,9 +3568,6 @@ renderHotkey(flatKey, title = null) {
 
 
         render () {
-            if (this.state.oInvisFrames && this.state.updateALot) {
-                this._onInvisStoreChange({ force: true })
-            }
 
             const folder = this.getFolderLayers();
             const desired = this.computeLayerCountFromFolder(folder);
@@ -3455,6 +3709,7 @@ renderHotkey(flatKey, title = null) {
                                   ),
                                  e("div", null, e("button", { onClick: () => { this.copyFolderForActiveLayer(this.state.copyLines)} }, "📋 Copy Folder") ),
                                  this.renderCheckbox("copyLines", "Copy Folder with Lines"),
+                                 this.renderDivider(),
 
                                  // Loop toggle and Grow toggle row
                                  e("div", { style: { display: "flex", alignItems: "center", gap: "12px" } },
@@ -3682,16 +3937,19 @@ renderHotkey(flatKey, title = null) {
                         e("button", emojiButtonProps("Previous Keyframe", () => this.setState({activeMultiId: Math.max(this.state.activeMultiId - 1, 0)})), "◀️"),
                   `Keyframe #${this.state.activeMultiId + 1}`,
                         e("button", emojiButtonProps("Next Keyframe", () => ((this.state.multiALength[this.state.activeMultiId]) !== 1) && this.setState({activeMultiId: (this.state.activeMultiId + 1)})), "▶️"),
+                  this.renderSpacer(),
                   this.renderCheckbox("smoothMulti", "Keyframe Smoothing"),
-                  // this.renderCheckbox("smoothMultiEnds", "Smooth Start & End"),
+                  this.renderCheckbox("smoothMultiEnds", "Smooth Start & End"),
+                  this.renderCheckbox("animatedAnchors", "Animated Anchors"),
+                  this.renderSpacer(),
                   this.renderCheckbox("impactFutureKeyframes", "Impact Future Keyframes"),
-                  this.renderSpacer(),
+                  this.renderDivider(),
                   this.renderCheckbox("warpWidget", "Warp Transform Widget"),
-                  this.renderSpacer(),
+                  this.renderDivider(),
                   this.renderSlider("multiALength", { min: 1, max: 50, step: 1 }, "Animation Length", true, true, true),
                   this.renderCheckbox("inverse", "Animate Backwards"),
-                  this.renderCheckbox("buildOffPrevFrame", "Build Off Previous Frame"),
                   this.renderSpacer(),
+                  this.renderCheckbox("buildOffPrevFrame", "Build Off Previous Frame"),
                   this.renderCheckbox("editAnimation", "Edit Selected Animation"),
                   this.state.editAnimation
                   && e(
@@ -3699,7 +3957,10 @@ renderHotkey(flatKey, title = null) {
                       null,
                       this.renderSlider("animationOffset", { min: -20, max: 20, step: 1 }, "Layer Offset"),
                   ),
-                  this.renderSpacer(),
+                  this.renderDivider(),
+                  this.renderCheckbox("selectFinalFrameOnCommit", "Select Final Frame on Commit"),
+                  this.renderCheckbox("resetAnimationOnCommit", "Reset Animation on Commit"),
+                  this.renderDivider(),
                   this.renderCheckbox("camLock", "Lock Animation to Camera"),
                   !this.state.camLock
                   && e(
@@ -3769,29 +4030,30 @@ renderHotkey(flatKey, title = null) {
                           this.renderCheckbox("shakeFreeze", "Freeze on Unshaky Frames"),
                       ),
                       this.renderSpacer(),
-                      this.renderSlider("rAccel", { min: -10, max: 10, step: 0.1 }, "Accelerate"),
+                      this.renderSlider("rMoveX", { min: 0, max: 10, step: 0.01 }, "Max Move X", true, true),
+                      this.renderSlider("rMoveY", { min: 0, max: 10, step: 0.01 }, "Max Move Y", true, true),
                       this.renderSpacer(),
-                      this.renderSlider("rMoveX", { min: 0, max: 10, step: 0.01 }, "Max Move X"),
-                      this.renderSlider("rMoveY", { min: 0, max: 10, step: 0.01 }, "Max Move Y"),
-                      this.renderSpacer(),
-                      this.renderSlider("rScaleX", { min: 0, max: 2, step: 0.01 }, "Max Scale X"),
-                      this.renderSlider("rScaleY", { min: 0, max: 2, step: 0.01 }, "Max Scale Y"),
+                      this.renderSlider("rScaleX", { min: 0, max: 2, step: 0.01 }, "Max Scale X", true, true, true, true),
+                      this.renderSlider("rScaleY", { min: 0, max: 2, step: 0.01 }, "Max Scale Y", true, true, true, true),
                       this.renderCheckbox("rScaleWidth", "Scale Width"),
                       this.renderSpacer(),
-                      this.renderSlider("rRotate", { min: 0, max: 45, step: 0.1 }, "Max Rotation"),
+                      this.renderSlider("rRotate", { min: 0, max: 45, step: 0.1 }, "Max Rotation", true, true),
                   ),
-                  this.renderSection("performance", "Performance & Commit"),
+                  this.renderSection("performance", "Performance"),
                   this.state.performance
                   && e(
                       "div",
                       { style: this.sectionBox },
+                      this.renderCheckbox("toggleUpdateWholeAnimation", "Always Update Whole Animation"),
+                      e("button", {
+                          onClick: () => this.setState({updateWholeAnimation: true}),
+                      }, "Update Whole Animation"),
+                      this.renderDivider(),
                       this.renderCheckbox("manualUpdateMode", `Manual Update [Press ${this.state.keyCommit}]`),
+                      this.renderSpacer(),
                       this.renderSlider("maxUpdateTime", { min: 0, max: 100, step: 1 }, "Max Update Time"),
-                      this.renderSpacer(),
+                      this.renderDivider(),
                       this.renderCheckbox("scaleMax", "Max Scale"),
-                      this.renderSpacer(),
-                      this.renderCheckbox("selectFinalFrameOnCommit", "Select Final Frame on Commit"),
-                      this.renderCheckbox("resetALengthOnCommit", "Reset Animation Length on Commit"),
                   ),
                   this.renderSection("hotkeys", "Hotkeys"),
                   this.state.hotkeys
@@ -3812,7 +4074,7 @@ renderHotkey(flatKey, title = null) {
                       this.renderSpacer(4),
                       this.renderHotkey("keyMoveALength", "Move Active Keyframe (Modifier)"),
                       this.renderDivider(),
-                      this.renderHotkey("keyResetTransform", "Reset Transform"),
+                      this.renderHotkey("keyResetTransform", "Reset Transform (or Shift+RMB on widget)"),
                       this.renderDivider(),
                       this.renderHotkey("keyPrevMultiTrans", "Previous Keyframe"),
                       this.renderSpacer(4),
