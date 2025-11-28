@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi & Tobias Bessler
 // @description  Smooth Pencil but better
-// @version      0.4.12
+// @version      0.4.17
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -13,6 +13,16 @@
 // @homepageURL  https://github.com/Xavi-LR/line-rider-mods-and-tools
 // @grant        none
 // ==/UserScript==
+
+/*
+XaviLR's loading screen tips
+
+#1 Press tab to toggle through 3 stabilizer amounts.
+#2 Hold your Disable Point Snap hotkey (probably alt) to not snap to lines.
+#3 Multicolor mode uses the layers in the active layer's folder. Make sure you're in a folder!
+#4 Traveling one block in the Nether is equal to traveling eight blocks in the overworld.
+
+*/
 
 const TOOL_ID = "Smooth Pencil"
 const TOOL_LAYER = 0
@@ -43,46 +53,50 @@ function main() {
 
     const PRESET_STORAGE_KEY = "smoothP_presets_v1"
 
-const DEFAULTS = {
-    time: 0,
-    length: 0.8,
-    stabilizer: 0.8,
-    stabilizerDecrease: 0.04,
-    width: 1,
-    overrideWidth: 1,
-    multiplier: 1,
-    overrideMultiplier: 1,
-    snapEnabled: true,
-    snapRadius: 0.6,
-    crayon: false,
-    dots: 25,
-    lineWidth: 1.0,
-    dotThickness: 0.18,
-    dotLength: 1.0,
-    thicknessVar: 0.05,
-    paintBrush: false,
-    bristles: 12,
-    brushSpread: 1,
-    bristleThickness: 0.2,
-    brushThicknessJitter: 0.05,
-    multicolored: false,
-    multicolorMode: "loop",
-    multidraw: false,
-    multidrawCount: 2,
-    multidrawOffsets: [-3, 3],
-    multidrawLayers: [],
-    multidrawPenPressure: false,
-    penPressure: false,
-    penIntensity: 1.0,
-    dottedLine: false,
-    dottedLength: 0,
-    randomMode: false,
-    random: 1,
-    xy: false,
+    const DEFAULTS = {
+        time: 0,
+        length: 0.8,
+        stabilizer: 0.8,
+        stabilizerDecrease: 0.04,
+        width: 1,
+        overrideWidth: 1,
+        multiplier: 1,
+        overrideMultiplier: 1,
+        snapEnabled: true,
+        snapRadius: 0.6,
+        crayon: false,
+        dots: 25,
+        lineWidth: 1.0,
+        dotThickness: 0.18,
+        dotLength: 1.0,
+        thicknessVar: 0.05,
+        paintBrush: false,
+        bristles: 12,
+        brushSpread: 1,
+        bristleThickness: 0.2,
+        brushThicknessJitter: 0.05,
+        multicolored: false,
+        multicolorMode: "loop",
+        multidraw: false,
+        multidrawCount: 2,
+        multidrawOffsets: [-3, 3],
+        multidrawLayers: [],
+        multidrawPenPressure: false,
+        equationOffsets: false,
+        multidrawEquationStrings: ["sin(x/3)*10", "cos(x/3)*10 * p"],
+        multidrawParallel: false,
+        multidrawEquationParallelStrings: ["cos(x/3)*10", "sin(x/3)*10 * p"],
+        penPressure: false,
+        penIntensity: 1.0,
+        dottedLine: false,
+        dottedLength: 0,
+        randomMode: false,
+        random: 1,
+        xy: false,
 
-    customizeOpen: false,
-    presetsOpen: false
-}
+        preferencesOpen: false,
+        customizeOpen: false,
+    }
 
     const SLIDERS = [
         { key: "time", label: "Time (s)", min: 0, max: 1, step: 0.01 },
@@ -164,6 +178,29 @@ const DEFAULTS = {
         return null
     }
 
+    function sanitizeExpression(expr) {
+        if (typeof expr !== 'string') return null;
+        let s = expr.trim();
+        s = s.replace(/\^/g, '**');
+        s = s.replace(/(^|[^A-Za-z0-9_])([+-]?\d*\.?\d+)\s*(?=x\b)/g, '$1$2 * ');
+        s = s.replace(/\\?pi\b/gi, 'PI');
+        if (/[^0-9+\-*/()., \t\n\rA-Za-z_p*]/.test(s)) return null;
+        const ids = s.match(/[A-Za-z_]\w*/g) || [];
+        return s;
+    }
+
+    function compileEquation(expr) {
+        const s = sanitizeExpression(expr);
+        if (!s) return null;
+        try {
+            const fn = new Function('x', 'p', 'const {sin,cos,tan,asin,acos,atan,sqrt,abs,pow,floor,ceil,round,min,max,PI,E}=Math; return (' + s + ');');
+            try { fn(1,0.5); } catch (e) {}
+            return fn;
+        } catch (e) {
+            return null;
+        }
+    }
+
     class SmoothPencilTool extends DefaultTool {
         constructor(store) {
             super(store)
@@ -185,6 +222,25 @@ const DEFAULTS = {
             this._internalStabilizer = Number(getSetting('stabilizer') ?? DEFAULTS.stabilizer)
             this._LinePreviewVisible = false
             this._LinePreview = null
+            this._StabilizerMode = 2
+            this._equationFns = [];
+            this._equationParallelFns = [];
+            this._segmentsForEquation = 0;
+            this._loadEquationFns = () => {
+                const arr = Array.isArray(getSetting('multidrawEquationStrings')) ? getSetting('multidrawEquationStrings') : [];
+                const arrPar = Array.isArray(getSetting('multidrawEquationParallelStrings')) ? getSetting('multidrawEquationParallelStrings') : [];
+                this._equationFns = arr.map(s => {
+                    if (typeof s !== 'string' || !s.trim()) return null;
+                    const cleaned = s.replace(/^[A-Za-z]\s*\(\s*x\s*\)\s*=/, '').trim();
+                    return compileEquation(cleaned);
+                });
+                this._equationParallelFns = arrPar.map(s => {
+                    if (typeof s !== 'string' || !s.trim()) return null;
+                    const cleaned = s.replace(/^[A-Za-z]\s*\(\s*x\s*\)\s*=/, '').trim();
+                    return compileEquation(cleaned);
+                });
+            };
+            this._loadEquationFns();
 
             this._nativePointerHandler = ev => {
                 if (ev && ev.pointerType === 'pen') {
@@ -198,7 +254,6 @@ const DEFAULTS = {
                     const raw = window.localStorage.getItem('HOTKEYS');
                     return raw ? JSON.parse(raw) : {};
                 } catch (err) {
-                    console.warn('Failed to parse HOTKEYS from localStorage', err);
                     return {};
                 }
             }
@@ -212,8 +267,8 @@ const DEFAULTS = {
             const disableSnapKey = hotkeys['modifiers.disablePointSnap'] || 'Alt';
 
             document.addEventListener("keydown", e => {
-                if (e.key === "Shift") this._shiftDown = true;
-                if (matchKey(e, disableSnapKey)) this._disableSnap = true;
+                if (e.key === "Shift" && !this._shiftDown) this._shiftDown = true;
+                if (matchKey(e, disableSnapKey) && !this._disableSnap) this._disableSnap = true;
             }, true);
 
             document.addEventListener("keyup", e => {
@@ -448,17 +503,15 @@ const DEFAULTS = {
         _renderPreview() {
             if (!this._lastPoint || !this._currentPos) { this._clearPreviewScene(); return }
             const scene = []
-            // pink connect-to-cursor line
             const color = new Millions.Color(255, 127, 255, 255)
             const zoom = getEditorZoom(store.getState()) || 1
-            let thickness = 0.2 / zoom
+            let thickness = 0.8 / zoom
             scene.push(new Millions.Line(
                 { x: this._lastPoint.x, y: this._lastPoint.y, colorA: color, colorB: color, thickness },
                 { x: this._currentPos.x, y: this._currentPos.y, colorA: color, colorB: color, thickness },
                 1, 9998
             ))
 
-            // preview line
             thickness = 2 * (this._LinePreview ? this._LinePreview.width : 1)
             if (this._LinePreviewVisible && this._LinePreview) {
                 const tcol = new Millions.Color(0, 0, 0, 128)
@@ -527,6 +580,45 @@ const DEFAULTS = {
             const lineWidth = Math.max(0, Number(getSetting('lineWidth') ?? DEFAULTS.lineWidth))
             const thicknessVar = Math.max(0, Number(getSetting('thicknessVar') ?? DEFAULTS.thicknessVar))
 
+            let useEquationOffsets = !!getSetting('equationOffsets')
+            const useEquationParallel = useEquationOffsets && !!getSetting('multidrawParallel')
+            if (useEquationOffsets) {
+                if (!this._equationFns || !Array.isArray(this._equationFns)) this._loadEquationFns()
+                if (!this._equationParallelFns || !Array.isArray(this._equationParallelFns)) this._loadEquationFns()
+                this._loadEquationFns()
+                const xForEq = (typeof this._segmentsForEquation === 'number' ? this._segmentsForEquation : 0) + 1
+                for (let i = 0; i < count; i++) {
+                    const fn = (this._equationFns && this._equationFns[i]) ? this._equationFns[i] : null
+                    if (typeof fn === 'function') {
+                        try {
+                            const val = Number(fn(xForEq, pressureEnd))
+                            if (!isNaN(val) && isFinite(val)) offsets[i] = val
+                        } catch (err) {
+                        }
+                    }
+                }
+            }
+
+            let parallelOffsets = []
+            if (useEquationParallel) {
+                const xForEq = (typeof this._segmentsForEquation === 'number' ? this._segmentsForEquation : 0) + 1
+                for (let i = 0; i < count; i++) {
+                    const fnp = (this._equationParallelFns && this._equationParallelFns[i]) ? this._equationParallelFns[i] : null
+                    if (typeof fnp === 'function') {
+                        try {
+                            const valp = Number(fnp(xForEq, pressureEnd))
+                            parallelOffsets[i] = (!isNaN(valp) && isFinite(valp)) ? valp : 0
+                        } catch (err) {
+                            parallelOffsets[i] = 0
+                        }
+                    } else {
+                        parallelOffsets[i] = 0
+                    }
+                }
+            } else {
+                while (parallelOffsets.length < count) parallelOffsets.push(0)
+            }
+
             const out = []
             for (const L of lines) {
                 const baseSX = (typeof L._trueStartX === 'number') ? L._trueStartX : L.x1
@@ -539,21 +631,26 @@ const DEFAULTS = {
                 const len = Math.hypot(dx, dy) || 1
                 const px = (dy / len)
                 const py = (-dx / len)
+                const ux = (dx / len)
+                const uy = (dy / len)
 
                 for (let i = 0; i < count; i++) {
                     const offBase = Number(offsets[i] || 0)
+                    const parBase = Number(parallelOffsets[i] || 0)
                     const sOff = offBase * (usePenPressure ? (typeof pressureStart === 'number' ? pressureStart : 1) : 1)
                     const eOff = offBase * (usePenPressure ? (typeof pressureEnd === 'number' ? pressureEnd : 1) : 1)
+                    const sPar = parBase * (usePenPressure ? (typeof pressureStart === 'number' ? pressureStart : 1) : 1)
+                    const ePar = parBase * (usePenPressure ? (typeof pressureEnd === 'number' ? pressureEnd : 1) : 1)
                     let startX, startY
                     if (this._multidrawLastEndpoints && typeof this._multidrawLastEndpoints[i] === 'object' && this._multidrawLastEndpoints[i] !== null) {
                         startX = this._multidrawLastEndpoints[i].x
                         startY = this._multidrawLastEndpoints[i].y
                     } else {
-                        startX = baseSX + px * sOff
-                        startY = baseSY + py * sOff
+                        startX = baseSX + px * sOff + ux * sPar
+                        startY = baseSY + py * sOff + uy * sPar
                     }
-                    const endX = baseFX + px * eOff
-                    const endY = baseFY + py * eOff
+                    const endX = baseFX + px * eOff + ux * ePar
+                    const endY = baseFY + py * eOff + uy * ePar
                     const layerFor = (typeof mLayers[i] !== 'undefined' && mLayers[i] !== null) ? mLayers[i] : L.layer
                     if (L._canonical) {
                         if (getSetting('xy')) {
@@ -608,7 +705,6 @@ const DEFAULTS = {
                                     this._multidrawLastEndpoints[i] = { x: seg.fx, y: seg.fy }
                                 }
                             }
-                            // continue to next multidraw line
                         } else {
                             if (crayonModeGlobal) {
                                 const dots = Math.max(1, parseInt(getSetting('dots') ?? DEFAULTS.dots, 10))
@@ -663,7 +759,15 @@ const DEFAULTS = {
                     }
                 }
             }
-            if (out.length) dispatchSetLines(out)
+            if (out.length) {
+                dispatchSetLines(out)
+                try {
+                    const canonicalCount = Array.isArray(lines) ? lines.reduce((acc, L) => acc + (L && L._canonical ? 1 : 0), 0) : 0;
+                    if (useEquationOffsets) {
+                        this._segmentsForEquation = (this._segmentsForEquation || 0) + (canonicalCount > 0 ? canonicalCount : 1)
+                    }
+                } catch (e) {}
+            }
         }
 
         _generateBrushStrokes(x1, y1, x2, y2, count, spread, thicknessJitter, bristleThickness, mult, type, flipped, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal) {
@@ -975,6 +1079,8 @@ const DEFAULTS = {
             this._lastTrueEndpoint = new V2(this._lastPoint)
             this._multidrawLastEndpoints = []
 
+            this._segmentsForEquation = 0;
+
             this._resetInternalStabilizer()
             this._clearLinePreview()
 
@@ -1023,7 +1129,6 @@ const DEFAULTS = {
 
             this._renderPreview()
         }
-
         onPointerUp(e) {
             if (this._detached) return
 
@@ -1060,6 +1165,7 @@ const DEFAULTS = {
                         params.boomerang,
                         params.pressureForLayer
                     )
+                    l._canonical = true
                     l._trueStartX = sx; l._trueStartY = sy; l._trueEndX = fx; l._trueEndY = fy
                     this._dispatchLines([l], this._pressureAtLastPoint, lastPressure)
                 }
@@ -1179,7 +1285,9 @@ const DEFAULTS = {
 
     class SmoothPencilComponent extends React.Component {
         constructor(props) {
-            super(props)
+            super(props);
+            this._StabilizerMode = 2;
+
             this.defaults = { ...DEFAULTS }
             this.sectionBox = {
                 border: "1px solid #ddd",
@@ -1231,8 +1339,86 @@ const DEFAULTS = {
             return out
         }
 
-        componentDidMount() { this._mounted = true; document.addEventListener("keydown", this._onKeyDown) }
-        componentWillUnmount() { this._mounted = false; document.removeEventListener("keydown", this._onKeyDown) }
+        _t = null;
+        _overlayEl = null;
+
+        componentDidMount() {
+            const el = document.createElement('div');
+            el.id = 'smoothpencil-stab-overlay';
+            Object.assign(el.style, {
+                position: 'fixed',
+                left: '50%',
+                top: '48%',
+                transform: 'translate(-50%, -50%)',
+                color: '#000',
+                zIndex: '9999',
+                transition: 'opacity 200ms linear, transform 200ms linear',
+                whiteSpace: 'nowrap',
+                willChange: 'opacity, transform',
+                fontSize: '30px',
+                opacity: '0',
+                userSelect: 'none',
+                pointerEvents: 'none',
+                backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                padding: '10px 15px',
+                borderRadius: '4px'
+            });
+            el.setAttribute('aria-hidden', 'true');
+
+            el.textContent = '';
+            document.body.appendChild(el);
+            this._overlayEl = el;
+
+            this._onTab = (e) => {
+                if (e.key !== 'Tab') return;
+                e.preventDefault();
+
+                this._StabilizerMode = (this._StabilizerMode % 3) + 1;
+                let newStabilizer, stabilizerName;
+                if (this._StabilizerMode == 1) {
+                    newStabilizer = 0;
+                    stabilizerName = "(1) LRA Pencil";
+                } else if (this._StabilizerMode == 2) {
+                    newStabilizer = 0.8;
+                    stabilizerName = "(2) Normal Pencil";
+                } else if (this._StabilizerMode == 3) {
+                    newStabilizer = 1
+                    stabilizerName = "(3) Smooth Pencil";
+                }
+                this.setStateAndSync({ stabilizer: newStabilizer });
+
+                if (!this._overlayEl) return;
+                const el = this._overlayEl;
+                el.textContent = stabilizerName;
+
+                el.style.transition = 'none';
+                el.style.opacity = '1';
+                el.style.transform = 'translate(-50%, -50%) scale(1)';
+
+                void el.offsetWidth;
+                requestAnimationFrame(() => {
+                    if (el) el.style.transition = 'opacity 200ms linear, transform 200ms linear';
+                });
+                clearTimeout(this._t);
+                this._t = setTimeout(() => {
+                    if (this._overlayEl) {
+                        this._overlayEl.style.opacity = '0';
+                        this._overlayEl.style.transform = 'translate(-50%, -50%) scale(0.98)';
+                    }
+                }, 700);
+            };
+
+            document.addEventListener('keydown', this._onTab, true);
+        }
+
+        componentWillUnmount() {
+            document.removeEventListener('keydown', this._onTab, true);
+            clearTimeout(this._t);
+            if (this._overlayEl) {
+                this._overlayEl.remove();
+                this._overlayEl = null;
+            }
+        }
 
         setStateAndSync(nstate, cb) {
             this.setState(nstate, () => {
@@ -1467,6 +1653,12 @@ const DEFAULTS = {
             const mdLayers = Array.isArray(this.state.multidrawLayers) ? this.state.multidrawLayers.slice(0) : []
             const mdNames = Array.isArray(this.state._multidrawLayerNames) ? this.state._multidrawLayerNames.slice(0) : []
             while (mdNames.length < mdCount) mdNames.push(mdLayers[mdNames.length] ? "(layer)" : "")
+
+            const eqStrings = Array.isArray(this.state.multidrawEquationStrings) ? this.state.multidrawEquationStrings.slice(0) : []
+            while (eqStrings.length < mdCount) eqStrings.push("")
+            const eqParStrings = Array.isArray(this.state.multidrawEquationParallelStrings) ? this.state.multidrawEquationParallelStrings.slice(0) : []
+            while (eqParStrings.length < mdCount) eqParStrings.push("")
+
             return e("div", { key: "smooth-pencil-root" }, [
                 ...SLIDERS.map(s => this.renderSlider(s.key, { min: s.min, max: s.max, step: s.step }, s.label)),
                 this.renderCheckbox("snapEnabled", "Line Snap"),
@@ -1490,7 +1682,6 @@ const DEFAULTS = {
                         this.renderSlider("bristleThickness", { min: 0.01, max: 5, step: 0.01 }, "Bristle Thickness"),
                         this.renderSlider("brushThicknessJitter", { min: 0, max: 1, step: 0.01 }, "Thickness Jitter"),
                     ]) : null,
-                    // multicolor
                     this.renderCheckbox("multicolored", "Multicolor"),
                     this.state.multicolored ? e("div", { style: this.sectionBox }, [
                         this.renderRadio("multicolorMode", "loop", "Loop"),
@@ -1498,44 +1689,111 @@ const DEFAULTS = {
                         this.renderRadio("multicolorMode", "random", "Random Color"),
                         this.renderRadio("multicolorMode", "penPressure", "Pen Pressure")
                     ]) : null,
-                    // multidraw
                     this.renderCheckbox("multidraw", "Multidraw"),
                     this.state.multidraw ? e("div", { style: this.sectionBox }, [
                         this.renderSlider("multidrawCount", { min: 1, max: 8, step: 1 }, "Lines to draw"),
+                        this.renderCheckbox("equationOffsets", "Equation Offsets"),
+                        this.state.equationOffsets ? this.renderCheckbox("multidrawParallel", "Parallel Offsets") : null,
                         e("div", { style: { marginTop: "6px" } },
-                          Array.from({ length: mdCount }).map((_, i) => e("div", { key: "md-"+i, style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" } }, [
-                            e("div", null, `#${i+1}`),
-                            e("input", { type: "range", min: -50, max: 50, step: 0.1, value: mdOffsets[i] || 0, onChange: ev => {
-                                const arr = Array.isArray(this.state.multidrawOffsets) ? this.state.multidrawOffsets.slice(0) : []
-                                while (arr.length < mdCount) arr.push(0)
-                                arr[i] = parseFloatOrDefault(ev.target.value, 0)
-                                this.setStateAndSync({ multidrawOffsets: arr })
-                            }, style: { flex: "1 1 auto" } }),
-                            e("input", { type: "number", value: mdOffsets[i] || 0, onChange: ev => {
-                                const arr = Array.isArray(this.state.multidrawOffsets) ? this.state.multidrawOffsets.slice(0) : []
-                                while (arr.length < mdCount) arr.push(0)
-                                arr[i] = parseFloatOrDefault(ev.target.value, 0)
-                                this.setStateAndSync({ multidrawOffsets: arr })
-                            }, style: { width: "5.5em" } }),
-                            e("button", { onClick: () => this._setMultidrawLayer(i) }, "Set Layer"),
-                            e("button", { onClick: () => this._resetMultidrawLayer(i) }, "⟳"),
-                            e("div", { style: { minWidth: "7em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, mdNames[i] || (mdLayers[i] ? String(mdLayers[i]) : "(none)"))
-                        ]))
+                          Array.from({ length: mdCount }).map((_, i) => {
+                            if (this.state.equationOffsets) {
+                                const letter = String.fromCharCode(65 + (i % 26));
+                                if (this.state.multidrawParallel) {
+                                    return e("div", { key: "md-eq-"+i, style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" } }, [
+                                        e("div", { style: { minWidth: "56px" } }, `${letter}⊥(x)=`),
+                                        e("input", {
+                                            type: "text",
+                                            value: eqStrings[i] || "",
+                                            onChange: ev => {
+                                                const arr = Array.isArray(this.state.multidrawEquationStrings) ? this.state.multidrawEquationStrings.slice(0) : []
+                                                while (arr.length < mdCount) arr.push("")
+                                                arr[i] = ev.target.value
+                                                this.setStateAndSync({ multidrawEquationStrings: arr })
+                                            },
+                                            placeholder: "x",
+                                            style: { flex: "1 1 auto" }
+                                        }),
+                                        e("div", { style: { minWidth: "62px" } }, `${letter}∥(x)=`),
+                                        e("input", {
+                                            type: "text",
+                                            value: eqParStrings[i] || "",
+                                            onChange: ev => {
+                                                const arr = Array.isArray(this.state.multidrawEquationParallelStrings) ? this.state.multidrawEquationParallelStrings.slice(0) : []
+                                                while (arr.length < mdCount) arr.push("")
+                                                arr[i] = ev.target.value
+                                                this.setStateAndSync({ multidrawEquationParallelStrings: arr })
+                                            },
+                                            placeholder: "x",
+                                            style: { flex: "1 1 auto" }
+                                        }),
+                                        e("button", { onClick: () => {
+                                            const arr = Array.isArray(this.state.multidrawEquationStrings) ? this.state.multidrawEquationStrings.slice(0) : []
+                                            while (arr.length < mdCount) arr.push("")
+                                            arr[i] = ""
+                                            const arrp = Array.isArray(this.state.multidrawEquationParallelStrings) ? this.state.multidrawEquationParallelStrings.slice(0) : []
+                                            while (arrp.length < mdCount) arrp.push("")
+                                            arrp[i] = ""
+                                            this.setStateAndSync({ multidrawEquationStrings: arr, multidrawEquationParallelStrings: arrp })
+                                        } }, "⟳"),
+                                        e("button", { onClick: () => this._setMultidrawLayer(i) }, "Set Layer"),
+                                        e("button", { onClick: () => this._resetMultidrawLayer(i) }, "⟳"),
+                                    ])
+                                } else {
+                                    return e("div", { key: "md-eq-"+i, style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" } }, [
+                                        e("div", null, `${letter}(x)=`),
+                                        e("input", {
+                                            type: "text",
+                                            value: eqStrings[i] || "",
+                                            onChange: ev => {
+                                                const arr = Array.isArray(this.state.multidrawEquationStrings) ? this.state.multidrawEquationStrings.slice(0) : []
+                                                while (arr.length < mdCount) arr.push("")
+                                                arr[i] = ev.target.value
+                                                this.setStateAndSync({ multidrawEquationStrings: arr })
+                                            },
+                                            placeholder: "e.g. sin(x/10)*5",
+                                            style: { flex: "1 1 auto" }
+                                        }),
+                                        e("button", { onClick: () => {
+                                            const arr = Array.isArray(this.state.multidrawEquationStrings) ? this.state.multidrawEquationStrings.slice(0) : []
+                                            while (arr.length < mdCount) arr.push("")
+                                            arr[i] = ""
+                                            this.setStateAndSync({ multidrawEquationStrings: arr })
+                                        } }, "⟳"),
+                                        e("button", { onClick: () => this._setMultidrawLayer(i) }, "Set Layer"),
+                                        e("button", { onClick: () => this._resetMultidrawLayer(i) }, "⟳"),
+                                    ])
+                                }
+                            } else {
+                                return e("div", { key: "md-"+i, style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "6px" } }, [
+                                    e("div", null, `#${i+1}`),
+                                    e("input", { type: "range", min: -50, max: 50, step: 0.1, value: mdOffsets[i] || 0, onChange: ev => {
+                                        const arr = Array.isArray(this.state.multidrawOffsets) ? this.state.multidrawOffsets.slice(0) : []
+                                        while (arr.length < mdCount) arr.push(0)
+                                        arr[i] = parseFloatOrDefault(ev.target.value, 0)
+                                        this.setStateAndSync({ multidrawOffsets: arr })
+                                    }, style: { flex: "1 1 auto" } }),
+                                    e("input", { type: "number", value: mdOffsets[i] || 0, onChange: ev => {
+                                        const arr = Array.isArray(this.state.multidrawOffsets) ? this.state.multidrawOffsets.slice(0) : []
+                                        while (arr.length < mdCount) arr.push(0)
+                                        arr[i] = parseFloatOrDefault(ev.target.value, 0)
+                                        this.setStateAndSync({ multidrawOffsets: arr })
+                                    }, style: { width: "5.5em" } }),
+                                    e("button", { onClick: () => this._setMultidrawLayer(i) }, "Set Layer"),
+                                    e("button", { onClick: () => this._resetMultidrawLayer(i) }, "⟳"),
+                                    e("div", { style: { minWidth: "7em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, mdNames[i] || (mdLayers[i] ? String(mdLayers[i]) : "(none)"))
+                                ])
+                            }
+                        })
                          ),
                         this.renderCheckbox("multidrawPenPressure", "Pen Pressure (multidraw)")
                     ]) : null,
-                    // pen pressure
                     this.renderCheckbox("penPressure", "Pen Pressure"),
                     this.state.penPressure ? this.renderSlider("penIntensity", { min: 0, max: 2, step: 0.01 }, "Pen Intensity") : null,
-                    // dotted line
                     this.renderCheckbox("dottedLine", "Dotted Line"),
                     this.state.dottedLine ? this.renderSlider("dottedLength", { min: 0, max: 1, step: 0.01 }, "Dotted Length") : null,
-                    // random
                     this.renderCheckbox("randomMode", "Random"),
                     this.state.randomMode ? this.renderSlider("random", { min: 0, max: 10, step: 1 }, "Random (px)") : null,
-                    // xy
                     this.renderCheckbox("xy", "XY"),
-                    // stabilizer decrease amount (each time the line doesn't generate because its length is too short)
                     this.renderSlider("stabilizerDecrease", { min: 0, max: 1, step: 0.01 }, "Stabilizer Decay"),
                 ]),
                 e("div", { key: "reset", style: { marginTop: "8px" } }, e("button", { onClick: () => this.onResetAll() }, "Reset All")),
