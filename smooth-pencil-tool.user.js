@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi & Tobias Bessler
 // @description  Smooth Pencil but better
-// @version      0.4.17
+// @version      0.4.20
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -68,8 +68,9 @@ function main() {
         dots: 25,
         lineWidth: 1.0,
         dotThickness: 0.18,
-        dotLength: 1.0,
         thicknessVar: 0.05,
+        dotLength: 1.0,
+        midBias: 0,
         paintBrush: false,
         bristles: 12,
         brushSpread: 1,
@@ -412,7 +413,7 @@ function main() {
             }
         }
 
-        _generateCrayonDots(x1, y1, x2, y2, dotsCount, dotWBase, spread, thicknessVariation, mult, type, flipped, multicolored, folderLayerIds, multicolorMode, randomColor, boomerang, pressureVal, dotLengthMul) {
+        _generateCrayonDots(x1, y1, x2, y2, dotsCount, dotWBase, spread, thicknessVariation, mult, type, flipped, multicolored, folderLayerIds, multicolorMode, randomColor, boomerang, pressureVal, dotLengthMul, midBias) {
             const out = []
             const dxL = x2 - x1
             const dyL = y2 - y1
@@ -425,7 +426,7 @@ function main() {
                 const px = x1 + dxL * t
                 const py = y1 + dyL * t
                 const ang = Math.random() * Math.PI * 2
-                const rr = Math.sqrt(Math.random()) * spread
+                const rr = Math.sqrt(Math.pow(Math.random(), 1 + midBias)) * spread;
                 const perpX = Math.cos(ang) * rr
                 const perpY = Math.sin(ang) * rr
                 const segAngle = Math.random() * Math.PI * 2
@@ -675,7 +676,8 @@ function main() {
                                         multicoloredGlobal, folderLayerIdsGlobal,
                                         multicolorModeGlobal, randomColorGlobal, boomerangGlobal,
                                         seg.pEnd,
-                                        Number(getSetting('dotLength') ?? DEFAULTS.dotLength)
+                                        Number(getSetting('dotLength') ?? DEFAULTS.dotLength),
+                                        Number(getSetting('midBias') ?? DEFAULTS.midBias),
                                     )
                                     if (layerFor != null) for (const p of pieces) p.layer = layerFor
                                     out.push(...pieces)
@@ -718,7 +720,8 @@ function main() {
                                     multicoloredGlobal, folderLayerIdsGlobal,
                                     multicolorModeGlobal, randomColorGlobal, boomerangGlobal,
                                     pressureEnd,
-                                    Number(getSetting('dotLength') ?? DEFAULTS.dotLength)
+                                    Number(getSetting('dotLength') ?? DEFAULTS.dotLength),
+                                    Number(getSetting('midBias') ?? DEFAULTS.midBias),
                                 )
                                 if (layerFor != null) for (const p of pieces) p.layer = layerFor
                                 out.push(...pieces)
@@ -836,7 +839,8 @@ function main() {
                     randomColor,
                     boomerang,
                     pressureForLayerSafe,
-                    Number(getSetting('dotLength') ?? DEFAULTS.dotLength)
+                    Number(getSetting('dotLength') ?? DEFAULTS.dotLength),
+                    Number(getSetting('midBias') ?? DEFAULTS.midBias),
                 ))
             } else if (paintBrushMode) {
                 const bristlesBase = Math.max(1, parseInt(getSetting("bristles") || DEFAULTS.bristles, 10))
@@ -1019,7 +1023,8 @@ function main() {
                         randomColor,
                         boomerang,
                         localPressure,
-                        Number(getSetting('dotLength') ?? DEFAULTS.dotLength)
+                        Number(getSetting('dotLength') ?? DEFAULTS.dotLength),
+                        Number(getSetting('midBias') ?? DEFAULTS.midBias),
                     ))
                 } else {
                     const L = this._makeLineObjLiteral(seg.sx, seg.sy, targetAx, targetAy, effectiveWidthVal, multVal, type, !!this._flipThisStroke, null, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, localPressure)
@@ -1052,6 +1057,106 @@ function main() {
             this._pressureAtLastPoint = this._currentPressure
             this._lastPoint = new V2({ x: finalX, y: finalY })
             this._lastTrueEndpoint = new V2({ x: finalX, y: finalY })
+        }
+
+        _finalizeSegment(sx, sy, fx, fy, lastPressure, params) {
+            const lastP = (typeof lastPressure === 'number') ? lastPressure : (typeof this._currentPressure === 'number' ? this._currentPressure : 0.5)
+            const multidrawEnabled = !!getSetting('multidraw')
+            const xyMode = !!getSetting('xy')
+            const crayonMode = !!(params && params.crayonMode)
+            const paintBrushMode = !!(params && params.paintBrushMode)
+
+            if (crayonMode || paintBrushMode) {
+                const pieces = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastP)
+                if (pieces && pieces.length) {
+                    this._dispatchLines(pieces, this._pressureAtLastPoint, lastP)
+                }
+                this._pressureAtLastPoint = lastP
+                this._lastPoint = new V2({ x: fx, y: fy })
+                this._lastTrueEndpoint = new V2({ x: fx, y: fy })
+                return
+            }
+
+            if (multidrawEnabled) {
+                if (xyMode) {
+                    const midX = fx
+                    const midY = sy
+                    const L1 = this._makeLineObjLiteral(sx, sy, midX, midY, params.effectiveWidthVal, params.multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, params.folderLayerIds, params.multicolored, params.multicolorMode, params.randomColor, params.boomerang, params.pressureForLayer)
+                    L1._canonical = true
+                    L1._trueStartX = sx; L1._trueStartY = sy; L1._trueEndX = midX; L1._trueEndY = midY
+                    const L2 = this._makeLineObjLiteral(midX, midY, fx, fy, params.effectiveWidthVal, params.multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, params.folderLayerIds, params.multicolored, params.multicolorMode, params.randomColor, params.boomerang, params.pressureForLayer)
+                    L2._canonical = true
+                    L2._trueStartX = midX; L2._trueStartY = midY; L2._trueEndX = fx; L2._trueEndY = fy
+                    this._dispatchLines([L1, L2], this._pressureAtLastPoint, lastP)
+                } else {
+                    const L = this._makeLineObjLiteral(sx, sy, fx, fy, params.effectiveWidthVal, params.multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, params.folderLayerIds, params.multicolored, params.multicolorMode, params.randomColor, params.boomerang, params.pressureForLayer)
+                    L._canonical = true
+                    L._trueStartX = sx; L._trueStartY = sy; L._trueEndX = fx; L._trueEndY = fy
+                    this._dispatchLines([L], this._pressureAtLastPoint, lastP)
+                }
+                this._pressureAtLastPoint = lastP
+                this._lastPoint = new V2({ x: fx, y: fy })
+                this._lastTrueEndpoint = new V2({ x: fx, y: fy })
+                return
+            }
+
+            if (xyMode) {
+                const midX = fx
+                const midY = sy
+                const out = []
+                const minLength = Number(getSetting('length') ?? DEFAULTS.length)
+                const len1 = Math.hypot(midX - sx, midY - sy)
+                const len2 = Math.hypot(fx - midX, fy - midY)
+                const use_l1 = len1 > minLength
+                const use_l2 = len2 > minLength
+                if (use_l1) out.push(...this._segmentPieces(sx, sy, midX, midY, params.pressureForLayer, lastP))
+                if (use_l2) out.push(...this._segmentPieces(midX, midY, fx, fy, params.pressureForLayer, lastP))
+                if (out.length) this._dispatchLines(out, this._pressureAtLastPoint, lastP)
+                this._pressureAtLastPoint = lastP
+                this._lastPoint = new V2({ x: fx, y: fy })
+                this._lastTrueEndpoint = new V2({ x: fx, y: fy })
+                return
+            }
+
+            const out = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastP)
+            if (out.length) this._dispatchLines(out, this._pressureAtLastPoint, lastP)
+            this._pressureAtLastPoint = lastP
+            this._lastPoint = new V2({ x: fx, y: fy })
+            this._lastTrueEndpoint = new V2({ x: fx, y: fy })
+        }
+
+        _generateBrushStrokes(x1, y1, x2, y2, count, spread, thicknessJitter, bristleThickness, mult, type, flipped, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal) {
+            const out = []
+            const dx = x2 - x1
+            const dy = y2 - y1
+            let perCallLayer = null
+            if (multicolored && multicolorMode !== "random" && multicolorMode !== "penPressure") {
+                perCallLayer = this._pickLayerIdForSequence(folderLayerIds, randomColor, boomerang, multicolorMode, pressureVal)
+            }
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2
+                const r = Math.sqrt(Math.random()) * spread
+                const ox = Math.cos(angle) * r
+                const oy = Math.sin(angle) * r
+                const sx = x1 + ox
+                const sy = y1 + oy
+                const ex = x2 + ox
+                const ey = y2 + oy
+                let w = Math.max(0.01, bristleThickness * (1 + (Math.random()*2 - 1) * thicknessJitter))
+                if (multicolored) {
+                    const lid = this._chooseLayer(folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal, perCallLayer)
+                    if (lid != null) {
+                        out.push({
+                            id: null, x1: sx, y1: sy, x2: ex, y2: ey,
+                            width: w, multiplier: mult, type, flipped: !!flipped, layer: lid,
+                            _trueStartX: sx, _trueStartY: sy, _trueEndX: ex, _trueEndY: ey
+                        })
+                        continue
+                    }
+                }
+                out.push(this._makeLineObjLiteral(sx, sy, ex, ey, w, mult, type, flipped, null, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal))
+            }
+            return out
         }
 
         onPointerDown(e) {
@@ -1145,30 +1250,7 @@ function main() {
                 const fx = this._LinePreview.fx
                 const fy = this._LinePreview.fy
 
-                if (params.crayonMode || params.paintBrushMode) {
-                    const pieces = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastPressure)
-                    if (pieces && pieces.length) {
-                        this._dispatchLines(pieces, this._pressureAtLastPoint, lastPressure)
-                    }
-                } else {
-                    const l = this._makeLineObjLiteral(
-                        sx, sy, fx, fy,
-                        params.effectiveWidthVal,
-                        params.multVal,
-                        getSelectedLineType(this.getState()),
-                        !!this._flipThisStroke,
-                        null,
-                        params.folderLayerIds,
-                        params.multicolored,
-                        params.multicolorMode,
-                        params.randomColor,
-                        params.boomerang,
-                        params.pressureForLayer
-                    )
-                    l._canonical = true
-                    l._trueStartX = sx; l._trueStartY = sy; l._trueEndX = fx; l._trueEndY = fy
-                    this._dispatchLines([l], this._pressureAtLastPoint, lastPressure)
-                }
+                this._finalizeSegment(sx, sy, fx, fy, lastPressure, params)
 
                 this._pressureAtLastPoint = lastPressure
                 this._lastPoint = new V2({ x: fx, y: fy })
@@ -1197,62 +1279,8 @@ function main() {
                         const d = Math.hypot(dx, dy)
                         if (d > 1e-6) {
 
-                            const xyMode = !!getSetting('xy')
-                            const multidrawEnabled = !!getSetting('multidraw')
+                            this._finalizeSegment(this._lastPoint.x, this._lastPoint.y, found.point.x, found.point.y, lastPressure, params)
 
-                            if (multidrawEnabled) {
-                                const sx = this._lastPoint.x
-                                const sy = this._lastPoint.y
-                                const fx = found.point.x
-                                const fy = found.point.y
-                                const L = this._makeLineObjLiteral(
-                                    sx, sy, fx, fy,
-                                    params.effectiveWidthVal,
-                                    params.multVal,
-                                    getSelectedLineType(this.getState()),
-                                    !!this._flipThisStroke,
-                                    null,
-                                    params.folderLayerIds,
-                                    params.multicolored,
-                                    params.multicolorMode,
-                                    params.randomColor,
-                                    params.boomerang,
-                                    params.pressureForLayer
-                                )
-                                L._canonical = true
-                                L._trueStartX = sx; L._trueStartY = sy; L._trueEndX = fx; L._trueEndY = fy
-                                if (this._dispatchLines) {
-                                    this._dispatchLines([L], this._pressureAtLastPoint, lastPressure)
-                                } else {
-                                    dispatchSetLines([L])
-                                }
-                                this._pressureAtLastPoint = lastPressure
-                                this._lastPoint = new V2({ x: fx, y: fy })
-                                this._lastTrueEndpoint = new V2({ x: fx, y: fy })
-                            } else if (xyMode) {
-                                const midX = found.point.x
-                                const midY = this._lastPoint.y
-                                const out = []
-                                const len1 = Math.hypot(midX - this._lastPoint.x, midY - this._lastPoint.y)
-                                const len2 = Math.hypot(found.point.x - midX, found.point.y - midY)
-                                const minLength = Number(getSetting('length') ?? DEFAULTS.length)
-                                const use_l1 = len1 > minLength
-                                const use_l2 = len2 > minLength
-                                if (use_l1) {
-                                    out.push(...this._segmentPieces(this._lastPoint.x, this._lastPoint.y, midX, midY, params.pressureForLayer, lastPressure))
-                                }
-                                if (use_l2) {
-                                    out.push(...this._segmentPieces(midX, midY, found.point.x, found.point.y, params.pressureForLayer, lastPressure))
-                                }
-                                if (out.length) this._dispatchLines(out, this._pressureAtLastPoint, lastPressure)
-                            } else {
-                                const out = this._segmentPieces(this._lastPoint.x, this._lastPoint.y, found.point.x, found.point.y, params.pressureForLayer, lastPressure)
-                                if (out.length) this._dispatchLines(out, this._pressureAtLastPoint, lastPressure)
-                                this._pressureAtLastPoint = lastPressure
-                                this._lastPoint.x = found.point.x
-                                this._lastPoint.y = found.point.y
-                                this._lastTrueEndpoint = new V2({ x: found.point.x, y: found.point.y })
-                            }
                         }
                     }
                 }
@@ -1674,6 +1702,7 @@ function main() {
                         this.renderSlider("dotThickness", { min: 0.01, max: 4, step: 0.01 }, "Dot Thickness"),
                         this.renderSlider("thicknessVar", { min: 0, max: 1, step: 0.01 }, "Thickness Jitter"),
                         this.renderSlider("dotLength", { min: 0, max: 50, step: 0.01 }, "Fuzziness"),
+                        this.renderSlider("midBias", { min: 0, max: 2, step: 0.01 }, "Middle Bias"),
                     ]) : null,
                     this.renderCheckbox("paintBrush", "Brush"),
                     this.state.paintBrush ? e("div", { style: this.sectionBox }, [
