@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      3.5.2
+// @version      3.5.4
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -179,7 +179,7 @@ class AnimateMod {
                     this.state.setActive = newActiveLayerId;
                     this.store.dispatch(commitTrackChanges());
                     this.store.dispatch(revertTrackChanges());
-                    this.store.dispatch(setSelectToolState({ selectedPoints }));
+                    this.store.dispatch(setSelectToolState({ selectedPoints, multi: true }));
 
                 }
             } else {
@@ -1194,63 +1194,64 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
     event.stopPropagation(); // extra safety for bubbling handlers
   }
 
-
-  if (keyStr === this.state.keyCommit) {
-    console.log("committing");
-    if (!this.state.manualUpdateMode) {
-      this.onCommit();
-      return;
-    }
-  }
-    if (keyStr === this.state.keyManualUpdate) {
-    console.log("updating");
-    if (this.state.manualUpdateMode) {
-      this.state.transUpdated = true;
-      this.mod.onUpdate();
-            if (this.state.oInvisFrames && this.state.updateALot) {
-                this._onInvisStoreChange({ force: true })
+    if (this.state.hasBeenActive) {
+        if (keyStr === this.state.keyCommit) {
+            console.log("committing");
+            if (!this.state.manualUpdateMode) {
+                this.onCommit();
+                return;
             }
+        }
+        if (keyStr === this.state.keyManualUpdate) {
+            console.log("updating");
+            if (this.state.manualUpdateMode) {
+                this.state.transUpdated = true;
+                this.mod.onUpdate();
+                if (this.state.oInvisFrames && this.state.updateALot) {
+                    this._onInvisStoreChange({ force: true })
+                }
+            }
+        } else if (keyStr.includes(this.state.keySetALength)) {
+            if (this.state.active) {
+                let backwards = false;
+                let move = false;
+                if (keyStr.includes(this.state.keySetALengthBackwards)) {
+                    backwards = true;
+                }
+                if (keyStr.includes(this.state.keyMoveALength)) {
+                    move = true;
+                }
+                this.setALength(backwards, move);
+            }
+        } else if (keyStr === this.state.keyToggleOverlay) {
+            console.log("toggling overlay");
+            if (this.state.oInvisFrames) {
+                this.disableOInvisFrames();
+            } else {
+                this.enableOInvisFrames();
+            }
+        } else if (keyStr === this.state.keyResetTransform) {
+            console.log("resetting transform");
+            this.onResetTransform();
+        } else if (keyStr === this.state.keyPrevMultiTrans) {
+            console.log("prev transform");
+            if (this.state.activeMultiId !== 0) {
+                this.setState({activeMultiId: (this.state.activeMultiId - 1)});
+            }
+        } else if (keyStr === this.state.keyNextMultiTrans) {
+            console.log("next transform");
+            if ((this.state.multiALength[this.state.activeMultiId]) !== 1) {
+                this.setState({activeMultiId: (this.state.activeMultiId + 1)});
+            }
+        } else if (keyStr === this.state.keyToggleManualUpdate) {
+            console.log("toggled manual");
+            if (this.state.manualUpdateMode) {
+                this.setState({manualUpdateMode: false});
+            } else {
+                this.setState({manualUpdateMode: true});
+            }
+        }
     }
-  } else if (keyStr.includes(this.state.keySetALength)) {
-    if (this.state.active) {
-        let backwards = false;
-        let move = false;
-    if (keyStr.includes(this.state.keySetALengthBackwards)) {
-        backwards = true;
-    }
-    if (keyStr.includes(this.state.keyMoveALength)) {
-        move = true;
-    }
-      this.setALength(backwards, move);
-    }
-  } else if (keyStr === this.state.keyToggleOverlay) {
-    console.log("toggling overlay");
-    if (this.state.oInvisFrames) {
-      this.disableOInvisFrames();
-    } else {
-      this.enableOInvisFrames();
-    }
-  } else if (keyStr === this.state.keyResetTransform) {
-    console.log("resetting transform");
-      this.onResetTransform();
-  } else if (keyStr === this.state.keyPrevMultiTrans) {
-    console.log("prev transform");
-      if (this.state.activeMultiId !== 0) {
-          this.setState({activeMultiId: (this.state.activeMultiId - 1)});
-      }
-  } else if (keyStr === this.state.keyNextMultiTrans) {
-    console.log("next transform");
-      if ((this.state.multiALength[this.state.activeMultiId]) !== 1) {
-          this.setState({activeMultiId: (this.state.activeMultiId + 1)});
-      }
-  } else if (keyStr === this.state.keyToggleManualUpdate) {
-    console.log("toggled manual");
-    if (this.state.manualUpdateMode) {
-          this.setState({manualUpdateMode: false});
-      } else {
-          this.setState({manualUpdateMode: true});
-      }
-  }
 }, true);
             this.defaultKeyframe = {
                 nudgeXSmall: 0,
@@ -1372,6 +1373,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
                 ...this.defaults,
                 ...this.defaultHotkeys,
                 active: false,
+                hasBeenActive: false,
                 numLayers: getSimulatorLayers(store.getState()).length,
 
                 animTools: true,
@@ -1725,11 +1727,8 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
 
                     setTimeout(() => {
                         console.log("reselecting")
-                        store.dispatch(setSelectToolState({ selectedPoints }));
+                        store.dispatch(setSelectToolState({ selectedPoints, multi: true }));
                         this.setState({ selectedPoints: null });
-                        // "if you scale without selecting a line in the process, it won't give you the line rider select box (which means it won't show the transform points)
-                        // because if you do setSelectToolState when nothing is box selected, it selects it like selecting a single line and idk how to make it not do that"
-                        // - XaviLR 2025
                     }, 0);
                 }
             }
@@ -2431,7 +2430,7 @@ setIndexStates(updates = [], shift = true) {
                 const layersArr = this.getSimulatorLayers();
                 const idToIndex = new Map(layersArr.map((l, idx) => [l.id, idx]));
                 if (typeof getLayerVisibleAtTime !== "function") {
-                    console.warn("Layer Automation has not yet been run");
+                    // console.warn("Layer Automation has not yet been run");
                     return;
                 }
 
@@ -3310,7 +3309,7 @@ stopListeningForHotkey() {
                 this.state.renderBB = [];
                 this.setState({ active: false });
             } else {
-                this.setState({ active: true });
+                this.setState({ active: true, hasBeenActive: true });
             }
         }
 
