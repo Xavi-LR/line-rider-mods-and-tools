@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      3.5.4
+// @version      3.5.5
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -2741,7 +2741,7 @@ setIndexStates(updates = [], shift = true) {
             };
 
             const time = getNum("T");
-            const length = getNum("L");
+            const length = getNum("L"); // i renamed this to layers
             const frameOffset = getNum("F");
             const jump = getNum("J");
             const loops = getNum("X");
@@ -3706,8 +3706,8 @@ renderHotkey(flatKey, title = null) {
                             return e("span", { style: { color: "#444", fontSize: "0.95em", userSelect: "none" } }, suffix);
                         })()
                                   ),
-                                 e("div", null, e("button", { onClick: () => { this.copyFolderForActiveLayer(this.state.copyLines)} }, "📋 Copy Folder") ),
-                                 this.renderCheckbox("copyLines", "Copy Folder with Lines"),
+                                 e("div", null, e("button", { onClick: () => { this.copyFolderForActiveLayer(this.state.copyLines)} }, "📋 Duplicate Folder") ),
+                                 this.renderCheckbox("copyLines", "Dupe Folder with Lines"),
                                  this.renderDivider(),
 
                                  // Loop toggle and Grow toggle row
@@ -3740,7 +3740,7 @@ renderHotkey(flatKey, title = null) {
                         }),
 
                                    // Length (L) -> default 1, min 1
-                                   this.renderFolderSlider("Length", parsed.length, 1, 200, 1, 1, (newVal) => {
+                                   this.renderFolderSlider("Layers", parsed.length, 1, 200, 1, 1, (newVal) => {
                             const s = { ...parsed, length: Math.max(1, newVal), loopEnabled: true };
                             this.updateFolderLoopName(s);
                         }),
