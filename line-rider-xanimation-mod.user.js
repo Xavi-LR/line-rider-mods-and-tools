@@ -4,7 +4,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Malizma and now Xavi
 // @description  x: the everything animate mod
-// @version      3.5.5
+// @version      3.6.0
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -135,7 +135,17 @@ class AnimateMod {
         });
     }
 
-    commit () {
+    commit (options = {}) {
+        const forceFullSelection = !!options.forceFullSelection;
+        if (forceFullSelection && this.state.calculateBoundsOnly) {
+            const prevCalculateBoundsOnly = this.state.calculateBoundsOnly;
+            this.state.calculateBoundsOnly = false;
+            this.state.updateWholeAnimation = true;
+            this.state.transUpdated = true;
+            this.onUpdate(this.state);
+            this.state.calculateBoundsOnly = prevCalculateBoundsOnly;
+        }
+
         if (this.changed) {
             if (this.state.selectFinalFrameOnCommit) {
 
@@ -276,6 +286,10 @@ _runTransform() {
       .map(id => this.track.getLine(id))
       .filter(l => l);
 
+    if (state.calculateBoundsOnly) {
+      pretransformedLines = this.getBoundsOnlySelectionLines(pretransformedLines);
+    }
+
     state.finalFrameLines = [];
     const posttransformedLines = [];
     const startTime = performance.now();
@@ -322,7 +336,7 @@ _runTransform() {
       'shake','shakeInterval','shakeFreeze','scaleWidth',
       'animationOffset','aLayers','groupBegin','groupEnd',
       'smoothMulti','smoothMultiEnds','impactFutureKeyframes',
-      'updateWholeAnimation','toggleUpdateWholeAnimation',
+      'updateWholeAnimation','toggleUpdateWholeAnimation','calculateBoundsOnly',
       'selectFinalFrameOnCommit','editAnimation'
     ];
 
@@ -1094,6 +1108,48 @@ _runTransform() {
         return transform;
     }
 
+    getBoundsOnlySelectionLines (lines) {
+        const actualLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+        if (!actualLines.length) return [];
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+
+        for (const line of actualLines) {
+            if (!line || !line.p1 || !line.p2) continue;
+            minX = Math.min(minX, line.p1.x, line.p2.x);
+            minY = Math.min(minY, line.p1.y, line.p2.y);
+            maxX = Math.max(maxX, line.p1.x, line.p2.x);
+            maxY = Math.max(maxY, line.p1.y, line.p2.y);
+        }
+
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+            return actualLines.slice();
+        }
+
+        const template = actualLines[0];
+        const templateProto = Object.getPrototypeOf(template);
+        const V2 = unsafeWindow.V2;
+
+        const makeBoundsLine = (index, p1, p2) => {
+            const line = Object.assign(Object.create(templateProto), template);
+            const numericId = Number(template.id);
+            line.id = Number.isFinite(numericId) ? (numericId * 10 + index) : index;
+            line.p1 = new V2(p1);
+            line.p2 = new V2(p2);
+            return line;
+        };
+
+        return [
+            makeBoundsLine(0, { x: minX, y: minY }, { x: minX, y: maxY }),
+            makeBoundsLine(1, { x: minX, y: maxY }, { x: maxX, y: maxY }),
+            makeBoundsLine(2, { x: maxX, y: minY }, { x: maxX, y: maxY }),
+            makeBoundsLine(3, { x: minX, y: minY }, { x: maxX, y: minY }),
+        ];
+    }
+
     active () {
         if (typeof this.state.multiALength[this.state.activeMultiId] === "undefined") {
             this.state.multiALength[this.state.activeMultiId] = 1;
@@ -1344,6 +1400,7 @@ if (this.state.active && (Object.keys(this.defaultMainHotkeys).some(k => (this.s
 
                 // === Performance & Commit (performance) ===
                 toggleUpdateWholeAnimation: false,
+                calculateBoundsOnly: false,
                 manualUpdateMode: false,
                 maxUpdateTime: 5,
 
@@ -1803,7 +1860,7 @@ onReset (key, multi = false) {
                     activeMultiId: 0
                 });
             }
-            this.mod.commit();
+            this.mod.commit({ forceFullSelection: this.state.calculateBoundsOnly });
             if (!this.state.selectFinalFrameOnCommit) {
                 this.state.renderBB = [];
                 this.setState({ active: false });
@@ -4047,6 +4104,7 @@ renderHotkey(flatKey, title = null) {
                       e("button", {
                           onClick: () => this.setState({updateWholeAnimation: true}),
                       }, "Update Whole Animation"),
+                      this.renderCheckbox("calculateBoundsOnly", "Calculate Bounds only"),
                       this.renderDivider(),
                       this.renderCheckbox("manualUpdateMode", `Manual Update [Press ${this.state.keyCommit}]`),
                       this.renderSpacer(),
