@@ -2,8 +2,8 @@
 // @name         Line Rider Multiplayer Mod
 // @namespace    https://www.linerider.com/
 // @author       Xavi
-// @description  Multiplayer client
-// @version      1.0.0
+// @description  P2P Multiplayer client
+// @version      2.0.0
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -1009,6 +1009,937 @@ queuedFilesContainer.style.minHeight = '110px';
 
 
 
+  /* ================================================================
+     P2P TRANSPORT + IN-BROWSER HOST ENGINE
+     ----------------------------------------------------------------
+     This block is a straight port of lrmp_server.js's authoritative
+     track/collision/moderation logic, adapted to run inside a
+     browser tab instead of a standalone Node process. Whichever
+     peer clicks "Host" runs this engine locally; the other peer(s)
+     connect to it directly over a WebRTC RTCDataChannel instead of
+     a WebSocket to a VPS. Message shapes, handler behavior, and the
+     collision-remap protocol (allocateNextLineId / meta.collisions /
+     mapPrevToNew) are unchanged from the server so undo/redo and id
+     collision handling behave identically to the original server.
+     ================================================================ */
+
+  function hostUid(prefix) {
+    prefix = prefix || '';
+    const arr = new Uint8Array(6);
+    (window.crypto || crypto).getRandomValues(arr);
+    let hex = '';
+    for (let i = 0; i < arr.length; i++) hex += arr[i].toString(16).padStart(2, '0');
+    return prefix + hex;
+  }
+
+  const HostEngine = (() => {
+    // clientsById: clientId => { send: fn(obj), username, color, connectedAt, currentTracks: Set }
+    const clientsById = new Map();
+    const tracks = new Map();
+
+    function send(conn, obj) {
+      if (!conn || typeof conn.send !== 'function') return;
+      try { conn.send(obj); } catch (e) { /* ignore */ }
+    }
+    function sendToClientId(targetId, obj) {
+      const c = clientsById.get(targetId);
+      if (c) send(c, obj);
+    }
+    function broadcastToTrack(track, obj, exceptClientId) {
+      if (!track || !track.participants) return;
+      for (const cid of Array.from(track.participants)) {
+        if (cid === exceptClientId) continue;
+        sendToClientId(cid, obj);
+      }
+    }
+    // Only one track can ever exist at a time (unlike the original server,
+    // which juggled many tracks across many clients at once) -- a P2P
+    // session has exactly one host and exactly one thing they're hosting,
+    // so `tracks` never holds more than a single entry in practice.
+    function getTrack() {
+      for (const t of tracks.values()) return t;
+      return null;
+    }
+    // Add an already-connected client straight into the track, if one
+    // exists -- replaces the old explicit "browse tracks, pick one, join
+    // it" flow, since with a single track there's nothing to pick.
+    function autoJoinIfPossible(clientId) {
+      const t = getTrack();
+      if (!t) return;
+      if (t.participants.has(clientId)) return;
+      if (t.banned && t.banned.has(clientId)) return;
+      const client = clientsById.get(clientId);
+      t.participants.add(clientId);
+      if (client) { client.currentTracks = client.currentTracks || new Set(); client.currentTracks.add(t.id); }
+      ensureTrackParticipantMeta(t);
+      sendToClientId(clientId, { type: 'join_ack', success: true, trackId: t.id, name: t.name });
+      if (t.hostClientId && clientsById.has(t.hostClientId) && t.hostClientId !== clientId) {
+        sendToClientId(t.hostClientId, { type: 'request_track', requesterClientId: clientId, trackId: t.id });
+      }
+      sendParticipantsUpdate(t);
+    }
+    function sendParticipantsUpdate(track) {
+      if (!track) return;
+      const participants = [];
+      for (const cid of track.participants) {
+        const cc = clientsById.get(cid);
+        const meta = (track.participantMeta && track.participantMeta.get(cid)) || {};
+        participants.push({
+          clientId: cid,
+          username: (cc && cc.username) || ('client-' + String(cid).slice(0, 6)),
+          color: (cc && cc.color) || '#0077cc',
+          isMod: !!meta.isMod,
+          muted: !!meta.muted,
+          perms: meta.perms || 'edit',
+          mode: meta.mode || 'edit'
+        });
+      }
+      const msg = { type: 'participants', trackId: track.id, name: track.name, hostClientId: track.hostClientId, participants, shareLayers: !!track.shareLayers, muteAll: !!track.muteAll };
+      for (const cid of track.participants) sendToClientId(cid, msg);
+    }
+    function ensureTrackParticipantMeta(t) {
+      if (!t.participantMeta) t.participantMeta = new Map();
+      for (const cid of t.participants) {
+        if (!t.participantMeta.has(cid)) t.participantMeta.set(cid, { isMod: false, muted: false, perms: 'edit', mode: 'edit', collisions: [] });
+      }
+      if (t.hostClientId) {
+        const hostMeta = t.participantMeta.get(t.hostClientId) || { isMod: false, muted: false, perms: 'edit', mode: 'edit', collisions: [] };
+        hostMeta.isMod = true;
+        t.participantMeta.set(t.hostClientId, hostMeta);
+      }
+    }
+
+    function registerClient(clientId, sendFn) {
+      clientsById.set(clientId, { send: sendFn, username: `anon-${String(clientId).slice(0, 6)}`, color: '#0077cc', connectedAt: Date.now(), currentTracks: new Set() });
+    }
+
+    function unregisterClient(clientId) {
+      const client = clientsById.get(clientId);
+      if (!client) return;
+      for (const t of Array.from(tracks.values())) {
+        if (t.participants.has(clientId)) {
+          t.participants.delete(clientId);
+          if (t.participantMeta) t.participantMeta.delete(clientId);
+          if (t.hostClientId === clientId) {
+            broadcastToTrack(t, { type: 'end_ack', trackId: t.id, reason: 'host_disconnected' });
+            tracks.delete(t.id);
+          } else {
+            sendParticipantsUpdate(t);
+          }
+        }
+      }
+      clientsById.delete(clientId);
+    }
+
+    function handleMessage(clientId, m) {
+      if (!m || !m.type) return;
+      const client = clientsById.get(clientId);
+
+      switch (m.type) {
+        case 'hello': {
+          if (!client) return;
+          if (m.version !== CLIENT_VERSION) {
+            sendToClientId(clientId, { type: 'hello_ack', clientId, receivedAt: Date.now(), success: false });
+            return;
+          }
+          client.username = m.username || client.username;
+          client.color = m.color || client.color;
+          sendToClientId(clientId, { type: 'hello_ack', clientId, receivedAt: Date.now(), connectedMessage: 'Connected (peer-to-peer session).', success: true });
+          Chat.show();
+          autoJoinIfPossible(clientId); // no-op if the host hasn't started a track yet
+          break;
+        }
+
+        case 'host_track': {
+          // Only one track can exist at a time -- replace anything already
+          // running rather than accumulating multiple entries.
+          for (const oldId of Array.from(tracks.keys())) tracks.delete(oldId);
+
+          const p = m.payload || {};
+          const s = m.settings || {};
+          const trackId = hostUid('track-');
+          const tobj = {
+            id: trackId, name: p.name || ('Track ' + trackId.slice(0, 6)), hostClientId: clientId,
+            engine: p.engine || null,
+            participants: new Set(), participantMeta: new Map(), banned: new Set(),
+            muteAll: false, shareLayers: !!s.shareLayers, lineIds: new Set()
+          };
+          if (p.engine && Array.isArray(p.engine.lines)) {
+            for (const L of p.engine.lines) if (L && typeof L.id !== 'undefined' && L.id !== null) tobj.lineIds.add(String(L.id));
+          }
+          tobj.participants.add(clientId);
+          tracks.set(trackId, tobj);
+          if (client) { client.currentTracks = client.currentTracks || new Set(); client.currentTracks.add(trackId); }
+          ensureTrackParticipantMeta(tobj);
+          sendToClientId(clientId, { type: 'host_ack', success: true, trackId, name: tobj.name });
+          sendParticipantsUpdate(tobj);
+          if (p.engine) tobj.engine = p.engine;
+          // Anyone who connected via invite code before the track existed
+          // gets pulled in now instead of having to separately "join".
+          for (const otherId of clientsById.keys()) {
+            if (otherId !== clientId) autoJoinIfPossible(otherId);
+          }
+          break;
+        }
+
+        case 'leave_track': {
+          const trackId = m.trackId;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'leave_ack', success: false, reason: 'no_track' }); return; }
+          if (t.participants.has(clientId)) t.participants.delete(clientId);
+          if (t.participantMeta) t.participantMeta.delete(clientId);
+          if (client && client.currentTracks) client.currentTracks.delete(trackId);
+          sendToClientId(clientId, { type: 'leave_ack', success: true, trackId });
+          sendParticipantsUpdate(t);
+          break;
+        }
+
+        case 'end_track': {
+          const trackId = m.trackId;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'end_ack', success: false, reason: 'no_track' }); return; }
+          if (t.hostClientId !== clientId) { sendToClientId(clientId, { type: 'end_ack', success: false, reason: 'not_host' }); return; }
+          for (const cid of t.participants) {
+            sendToClientId(cid, { type: 'end_ack', success: true, trackId });
+            const cc = clientsById.get(cid);
+            if (cc && cc.currentTracks) cc.currentTracks.delete(trackId);
+          }
+          tracks.delete(trackId);
+          break;
+        }
+
+        case 'kick': {
+          const trackId = m.trackId;
+          const targetClientId = m.targetClientId;
+          const t = tracks.get(trackId);
+          if (!t) return;
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const isAllowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!isAllowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'kick', reason: 'not_allowed' }); return; }
+          if (!t.participants.has(targetClientId)) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'kick', reason: 'not_in_track' }); return; }
+          if (targetClientId === t.hostClientId) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'kick', reason: 'cannot_kick_host' }); return; }
+          t.participants.delete(targetClientId);
+          if (t.participantMeta) t.participantMeta.delete(targetClientId);
+          sendToClientId(targetClientId, { type: 'kicked', targetClientId, by: clientId, trackId, reason: 'kicked' });
+          const tc = clientsById.get(targetClientId);
+          if (tc && tc.currentTracks) tc.currentTracks.delete(trackId);
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'kick', targetClientId });
+          break;
+        }
+
+        case 'request_engine_changes': {
+          const trackId = m.trackId || null;
+          const t = trackId ? tracks.get(trackId) : null;
+          if (!t) return;
+
+          if (!t.lineIds) t.lineIds = new Set();
+          if (!t.participantMeta) t.participantMeta = new Map();
+
+          if (typeof t.nextLineId !== 'number' || Number.isNaN(t.nextLineId)) {
+            const numericIds = Array.from(t.lineIds).map(s => Number(s)).filter(n => Number.isFinite(n) && Number.isSafeInteger(n) && n > 0);
+            t.nextLineId = numericIds.length > 0 ? Math.max(...numericIds) + 1 : 1;
+          }
+
+          function allocateNextLineId(track) {
+            if (!track.nextLineId || typeof track.nextLineId !== 'number') track.nextLineId = 1;
+            let candidate = Math.max(1, Math.floor(track.nextLineId));
+            while (track.lineIds.has(String(candidate))) candidate += 1;
+            track.lineIds.add(String(candidate));
+            track.nextLineId = candidate + 1;
+            return candidate;
+          }
+
+          function clientMayEdit(track, cid) {
+            if (!track) return false;
+            const meta = track.participantMeta && track.participantMeta.get(cid);
+            const perms = meta && meta.perms ? meta.perms : 'view';
+            const mode = meta && meta.mode ? meta.mode : 'view';
+            if (mode === 'view' || perms === 'view') return false;
+            return true;
+          }
+
+          if (!t.participants || !t.participants.has(clientId)) return;
+          if (!clientMayEdit(t, clientId)) {
+            sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'request_engine_changes', reason: 'not_allowed' });
+            return;
+          }
+
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const hasMetaCollisions = meta && Array.isArray(meta.collisions) && meta.collisions.length > 0;
+
+          const mapPrevToNew = new Map();
+          if (hasMetaCollisions) {
+            for (const c of meta.collisions) if (c && c.prevId != null && c.newId != null) mapPrevToNew.set(String(c.prevId), c.newId);
+          }
+
+          const allNewCollisionsMeta = [];
+
+          for (const fn of m.functions) {
+            const removeCollisions = [];
+            const addCollisions = [];
+            const collisionsMeta = [];
+
+            if (Array.isArray(fn.linesToRemove)) {
+              for (const originalId of fn.linesToRemove) {
+                if (originalId == null) continue;
+                const resolvedId = mapPrevToNew.has(String(originalId)) ? mapPrevToNew.get(String(originalId)) : originalId;
+                if (String(resolvedId) !== String(originalId)) removeCollisions.push(Number(resolvedId));
+                t.lineIds.delete(String(resolvedId));
+              }
+              if (removeCollisions.length > 0) {
+                sendToClientId(clientId, { type: 'engine_changes', functions: [{ linesToRemove: removeCollisions, linesToAdd: null }], clientId: 'server' });
+              }
+            }
+
+            if (Array.isArray(fn.linesToAdd)) {
+              for (const incomingLine of fn.linesToAdd) {
+                if (!incomingLine || incomingLine.id == null) continue;
+                const originalIncomingId = incomingLine.id;
+                const lineClone = { ...incomingLine };
+
+                if (mapPrevToNew.has(String(originalIncomingId))) {
+                  const mappedId = mapPrevToNew.get(String(originalIncomingId));
+                  lineClone.id = Number(mappedId);
+                  addCollisions.push({ ...lineClone });
+                  t.lineIds.add(String(mappedId));
+                  continue;
+                }
+
+                const incomingIdStr = String(lineClone.id);
+                if (lineClone.added && t.lineIds.has(incomingIdStr)) {
+                  const newId = allocateNextLineId(t);
+                  collisionsMeta.push({ prevId: originalIncomingId, newId });
+                  mapPrevToNew.set(String(originalIncomingId), newId);
+                  lineClone.id = newId;
+                  addCollisions.push({ ...lineClone });
+                } else {
+                  t.lineIds.add(incomingIdStr);
+                }
+              }
+
+              if (collisionsMeta.length > 0) {
+                if (meta) {
+                  meta.collisions = [...(Array.isArray(meta.collisions) ? meta.collisions : []), ...collisionsMeta];
+                  t.participantMeta.set(clientId, meta);
+                }
+                allNewCollisionsMeta.push(...collisionsMeta);
+                sendToClientId(clientId, { type: 'engine_changes', functions: [{ linesToRemove: null, linesToAdd: addCollisions }], collisions: collisionsMeta, clientId: 'server' });
+              } else if (addCollisions.length > 0) {
+                sendToClientId(clientId, { type: 'engine_changes', functions: [{ linesToRemove: null, linesToAdd: addCollisions }], clientId: 'server' });
+              }
+            }
+          }
+
+          const functionsForBroadcast = m.functions.map(fn => {
+            if (fn == null || typeof fn !== 'object' || Array.isArray(fn)) return fn;
+            const fnClone = { ...fn };
+            if (Array.isArray(fn.linesToRemove)) {
+              fnClone.linesToRemove = fn.linesToRemove.map(id => {
+                if (id == null) return id;
+                return mapPrevToNew.has(String(id)) ? mapPrevToNew.get(String(id)) : id;
+              });
+            } else if (Object.prototype.hasOwnProperty.call(fn, 'linesToRemove')) {
+              fnClone.linesToRemove = null;
+            } else {
+              delete fnClone.linesToRemove;
+            }
+            if (Array.isArray(fn.linesToAdd)) {
+              fnClone.linesToAdd = fn.linesToAdd.map(line => {
+                if (!line || typeof line !== 'object') return line;
+                const clonedLine = { ...line };
+                if (clonedLine.id != null && mapPrevToNew.has(String(clonedLine.id))) clonedLine.id = mapPrevToNew.get(String(clonedLine.id));
+                return clonedLine;
+              });
+            } else if (Object.prototype.hasOwnProperty.call(fn, 'linesToAdd')) {
+              fnClone.linesToAdd = null;
+            } else {
+              delete fnClone.linesToAdd;
+            }
+            return fnClone;
+          });
+
+          broadcastToTrack(t, { type: 'engine_changes', functions: functionsForBroadcast, clientId });
+          if (t.participants) sendParticipantsUpdate(t);
+          return;
+        }
+
+        case 'forget_collision': {
+          return;
+        }
+
+        case 'request_command_changes': {
+          const trackId = m.trackId || null;
+          const t = trackId ? tracks.get(trackId) : null;
+          if (!t) return;
+          function clientMayEdit(track, cid) {
+            if (!track) return false;
+            ensureTrackParticipantMeta(track);
+            const meta = track.participantMeta.get(cid) || { perms: 'view', mode: 'view' };
+            if (meta.mode === 'view' || meta.perms === 'view') return false;
+            return true;
+          }
+          if (!t.participants || !t.participants.has(clientId)) return;
+          if (!clientMayEdit(t, clientId)) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'request_command_changes', reason: 'not_allowed' }); return; }
+          broadcastToTrack(t, { type: 'command_changes', function: m.function, args: m.args, clientId });
+          if (t.participants) sendParticipantsUpdate(t);
+          return;
+        }
+
+        case 'request_cursor': {
+          const trackId = m.trackId || null;
+          const t = trackId ? tracks.get(trackId) : null;
+          if (t) {
+            if (!t.participants.has(clientId)) return;
+            broadcastToTrack(t, { type: 'cursor', color: m.color, line: m.line, clientId });
+            return;
+          }
+          break;
+        }
+
+        case 'track': {
+          const trackId = m.trackId || null;
+          const t = trackId ? tracks.get(trackId) : null;
+          if (!t) return;
+          t.engine = m.trackData || null;
+          t.lineIds = t.lineIds || new Set();
+          t.lineIds.clear();
+          try {
+            if (m.trackData && Array.isArray(m.trackData.lines)) {
+              for (const L of m.trackData.lines) if (L && typeof L.id !== 'undefined' && L.id !== null) t.lineIds.add(String(L.id));
+            }
+          } catch (e) { /* ignore */ }
+
+          if (m.requesterClientId) {
+            if (t.participants.has(m.requesterClientId) || clientsById.has(m.requesterClientId)) {
+              sendToClientId(m.requesterClientId, { type: 'track', trackData: m.trackData, clientId, trackId: t.id, resync: !!m.resync });
+            }
+          } else {
+            for (const cid of t.participants) sendToClientId(cid, { type: 'track', trackData: m.trackData, clientId, trackId: t.id, resync: !!m.resync });
+          }
+          break;
+        }
+
+        case 'chat': {
+          const trackId = m.trackId || (client && client.currentTracks && Array.from(client.currentTracks)[0]) || null;
+          const t = trackId ? tracks.get(trackId) : null;
+          const files = Array.isArray(m.files) && m.files.length ? m.files.map(f => ({ name: f.name, type: f.type, size: f.size, dataUrl: f.dataUrl || null, trackMeta: f.trackMeta || null })) : null;
+          const payload = { type: 'chat', clientId, username: (m.username || (client || {}).username || 'Anon'), text: m.text || '', color: m.color || ((client || {}).color || '#0077cc'), trackId, files };
+
+          if (t) {
+            if (t.muteAll) {
+              const meta = t.participantMeta && t.participantMeta.get(clientId);
+              const allowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+              if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'chat', reason: 'muted' }); return; }
+            }
+            broadcastToTrack(t, payload);
+          } else {
+            for (const c of clientsById.values()) if (c.send && ((c.currentTracks == null) || c.currentTracks.size === 0)) send(c, payload);
+          }
+          break;
+        }
+
+        case 'update_username': {
+          if (!client) return;
+          client.username = m.username || client.username;
+          client.color = m.color || client.color;
+          if (client.currentTracks) for (const tid of client.currentTracks) { const t = tracks.get(tid); if (t) sendParticipantsUpdate(t); }
+          break;
+        }
+
+        case 'private_message': {
+          const target = m.targetClientId;
+          const text = m.text || '';
+          if (!target) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'private_message', reason: 'no_target' }); return; }
+          const payload = { type: 'private_message', clientId, username: (client || {}).username || 'Anon', text, targetClientId: target, color: (client || {}).color || '#0077cc' };
+          sendToClientId(target, payload);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'private_message', targetClientId: target, text });
+          break;
+        }
+
+        case 'set_mod': {
+          const trackId = m.trackId, target = m.targetClientId, grant = !!m.grant;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'set_mod', reason: 'no_track' }); return; }
+          if (t.hostClientId !== clientId) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'set_mod', reason: 'not_host' }); return; }
+          if (!t.participants.has(target)) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'set_mod', reason: 'not_in_track' }); return; }
+          ensureTrackParticipantMeta(t);
+          const meta = t.participantMeta.get(target) || { isMod: false, muted: false, perms: 'edit', mode: 'edit' };
+          meta.isMod = grant;
+          t.participantMeta.set(target, meta);
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'set_mod', targetClientId: target, grant });
+          if (target !== clientId) sendToClientId(target, { type: 'server_ack', ok: true, action: 'set_mod', targetClientId: target, grant });
+          break;
+        }
+
+        case 'mute_all': {
+          const trackId = m.trackId, mute = !!m.mute;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'mute_all', reason: 'no_track' }); return; }
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const allowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'mute_all', reason: 'not_allowed' }); return; }
+          t.muteAll = mute;
+          broadcastToTrack(t, { type: 'server_ack', ok: true, action: 'mute_all', mute });
+          break;
+        }
+
+        case 'mute': {
+          const trackId = m.trackId, target = m.targetClientId, mute = !!m.mute;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'mute', reason: 'no_track' }); return; }
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const allowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'mute', reason: 'not_allowed' }); return; }
+          if (!t.participants.has(target)) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'mute', reason: 'not_in_track' }); return; }
+          if (target === t.hostClientId) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'mute', reason: 'cannot_mute_host' }); return; }
+          ensureTrackParticipantMeta(t);
+          const tgtMeta = t.participantMeta.get(target) || { isMod: false, muted: false, perms: 'edit', mode: 'edit' };
+          tgtMeta.muted = mute;
+          t.participantMeta.set(target, tgtMeta);
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'mute', targetClientId: target, mute });
+          if (target !== clientId) sendToClientId(target, { type: 'server_ack', ok: true, action: 'mute', targetClientId: target, mute });
+          break;
+        }
+
+        case 'ban': {
+          const trackId = m.trackId, target = m.targetClientId;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'ban', reason: 'no_track' }); return; }
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const allowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'ban', reason: 'not_allowed' }); return; }
+          if (!t.participants.has(target)) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'ban', reason: 'not_in_track' }); return; }
+          if (target === t.hostClientId) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'ban', reason: 'cannot_ban_host' }); return; }
+          t.banned.add(target);
+          t.participants.delete(target);
+          if (t.participantMeta) t.participantMeta.delete(target);
+          sendToClientId(target, { type: 'kicked', targetClientId: target, by: clientId, trackId, reason: 'banned' });
+          const tc = clientsById.get(target);
+          if (tc && tc.currentTracks) tc.currentTracks.delete(trackId);
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'ban', targetClientId: target });
+          break;
+        }
+
+        case 'permsall': {
+          const trackId = m.trackId, perms = m.perms === 'view' ? 'view' : 'edit';
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'permsall', reason: 'no_track' }); return; }
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const allowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'permsall', reason: 'not_allowed' }); return; }
+          ensureTrackParticipantMeta(t);
+          for (const cid of t.participants) {
+            if (cid === t.hostClientId) continue;
+            const pmeta = t.participantMeta.get(cid) || { isMod: false, muted: false, perms: 'edit', mode: 'edit' };
+            pmeta.perms = perms;
+            if (perms === 'view' && !pmeta.isMod && cid !== t.hostClientId) pmeta.mode = 'view';
+            t.participantMeta.set(cid, pmeta);
+          }
+          sendParticipantsUpdate(t);
+          broadcastToTrack(t, { type: 'server_ack', ok: true, action: 'permsall', perms });
+          break;
+        }
+
+        case 'set_perms': {
+          const trackId = m.trackId, target = m.targetClientId, perms = m.perms === 'view' ? 'view' : 'edit';
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'perms', reason: 'no_track' }); return; }
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const allowed = (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'perms', reason: 'not_allowed' }); return; }
+          if (!t.participants.has(target)) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'perms', reason: 'not_in_track' }); return; }
+          ensureTrackParticipantMeta(t);
+          const tgtMeta = t.participantMeta.get(target) || { isMod: false, muted: false, perms: 'edit', mode: 'edit' };
+          tgtMeta.perms = perms;
+          if (perms === 'view' && !t.participantMeta.get(target).isMod && target !== t.hostClientId) tgtMeta.mode = 'view';
+          t.participantMeta.set(target, tgtMeta);
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'perms', targetClientId: target });
+          sendToClientId(target, { type: 'server_ack', ok: true, action: 'perms', targetClientId: target });
+          break;
+        }
+
+        case 'set_mode': {
+          const trackId = m.trackId, target = m.targetClientId || clientId, mode = (m.mode === 'view') ? 'view' : 'edit';
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'set_mode', reason: 'no_track' }); return; }
+          const meta = t.participantMeta && t.participantMeta.get(clientId);
+          const allowed = (target === clientId) || (t.hostClientId === clientId) || (meta && meta.isMod);
+          if (!allowed) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'set_mode', reason: 'not_allowed' }); return; }
+          ensureTrackParticipantMeta(t);
+          const tgtMeta = t.participantMeta.get(target) || { isMod: false, muted: false, perms: 'edit', mode: 'edit' };
+          tgtMeta.mode = mode;
+          t.participantMeta.set(target, tgtMeta);
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'set_mode', targetClientId: target, mode });
+          if (target !== clientId) sendToClientId(target, { type: 'server_ack', ok: true, action: 'set_mode', targetClientId: target, mode });
+          break;
+        }
+
+        case 'update_track': {
+          const trackId = m.trackId, settings = m.settings || {}, payload = m.payload || {};
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'update_track', reason: 'no_track' }); return; }
+          if (t.hostClientId !== clientId) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'update_track', reason: 'not_host' }); return; }
+          if (typeof payload.name !== 'undefined') t.name = payload.name;
+          t.shareLayers = !!settings.shareLayers;
+          sendParticipantsUpdate(t);
+          sendToClientId(clientId, { type: 'server_ack', ok: true, action: 'update_track', trackId });
+          break;
+        }
+
+        case 'request_location': {
+          const targetClientId = m.targetClientId;
+          sendToClientId(targetClientId, { type: 'request_location', requesterId: clientId, targetClientId });
+          break;
+        }
+
+        case 'location': {
+          const targetClientId = m.targetClientId, requesterId = m.requesterId, location = m.location;
+          sendToClientId(requesterId, { type: 'location', location, targetClientId });
+          break;
+        }
+
+        case 'request_tp': {
+          const trackId = m.trackId;
+          const t = tracks.get(trackId);
+          if (!t) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'request_tp', reason: 'no_track' }); return; }
+          if (t.hostClientId !== clientId) { sendToClientId(clientId, { type: 'server_ack', ok: false, action: 'request_tp', reason: 'not_host' }); return; }
+          const targetClientId = m.targetClientId, location = m.location;
+          sendToClientId(targetClientId, { type: 'request_tp', location, requesterId: clientId });
+          break;
+        }
+
+        case 'ping': {
+          sendToClientId(clientId, { type: 'pong', startTime: m.startTime });
+          return;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    function reset() {
+      clientsById.clear();
+      tracks.clear();
+    }
+
+    return { registerClient, unregisterClient, handleMessage, reset };
+  })();
+
+  /* ---------- WebRTC transport (manual copy/paste signaling, no server) ---------- */
+  const RTC_ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+
+  // Optional TURN relay (fixes connections STUN alone can't make: two
+  // peers on the same network behind a router that doesn't support NAT
+  // hairpinning or has AP/client isolation enabled, and symmetric NAT
+  // across different networks). Leave blank to stay STUN-only, which still
+  // works for plenty of network setups, just not all of them -- see the
+  // P2P README. To enable it:
+  //   1. Sign up free at https://www.expressturn.com (just email + a
+  //      password -- no business info, no card for the free tier).
+  //   2. Open the dashboard's "TURN Servers" panel; it shows a Username
+  //      and Password (long-term credentials, static until you click
+  //      "Refresh Credentials" -- don't refresh unless you want to
+  //      invalidate the ones below).
+  //   3. Paste them below. EXPRESSTURN_HOST is the server:port shown in
+  //      that same panel -- 'free.expressturn.com:3478' is the documented
+  //      default for the free tier, but double check yours matches.
+  // Free tier: 1000GB/month, single region, TCP+UDP on port 3478 -- plenty
+  // for this, since it's just line data and cursor positions, not video.
+  const EXPRESSTURN_USERNAME = '000000002101518693';
+  const EXPRESSTURN_PASSWORD = 'hFRq2KJpJAGqmMr14Z5wjpoAiKQ=';
+  const EXPRESSTURN_HOST = 'free.expressturn.com:3478';
+
+  function p2pGetIceServers() {
+    if (!EXPRESSTURN_USERNAME || !EXPRESSTURN_PASSWORD) return RTC_ICE_SERVERS;
+    return [
+      ...RTC_ICE_SERVERS,
+      {
+        urls: [`turn:${EXPRESSTURN_HOST}`, `turn:${EXPRESSTURN_HOST}?transport=tcp`],
+        username: EXPRESSTURN_USERNAME,
+        credential: EXPRESSTURN_PASSWORD
+      }
+    ];
+  }
+
+  function p2pWaitForIce(pc) {
+    return new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') { resolve(); return; }
+      const onChange = () => {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', onChange);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', onChange);
+      setTimeout(resolve, 10000); // don't hang forever if gathering stalls
+    });
+  }
+  // Codes are gzip-compressed before base64 when the browser supports it
+  // (most SDP bulk is repetitive candidate/header text that compresses
+  // well) -- shortens the copy-paste blob noticeably, especially now that
+  // TURN adds an extra relay candidate. Falls back to plain base64 if
+  // CompressionStream isn't available, and decode understands both.
+  async function p2pEncode(desc) {
+    const json = JSON.stringify({ type: desc.type, sdp: desc.sdp });
+    if (window.CompressionStream) {
+      try {
+        const cs = new CompressionStream('gzip');
+        const writer = cs.writable.getWriter();
+        writer.write(new TextEncoder().encode(json));
+        writer.close();
+        const buf = await new Response(cs.readable).arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return 'gz1:' + btoa(binary);
+      } catch (e) { /* fall through to uncompressed */ }
+    }
+    return 'raw1:' + btoa(unescape(encodeURIComponent(json)));
+  }
+  async function p2pDecode(code) {
+    const trimmed = code.trim().replace(/\s+/g, '');
+    if (trimmed.startsWith('gz1:')) {
+      const binary = atob(trimmed.slice(4));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const ds = new DecompressionStream('gzip');
+      const writer = ds.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+      const buf = await new Response(ds.readable).arrayBuffer();
+      return JSON.parse(new TextDecoder().decode(buf));
+    }
+    if (trimmed.startsWith('raw1:')) {
+      return JSON.parse(decodeURIComponent(escape(atob(trimmed.slice(5)))));
+    }
+    return JSON.parse(decodeURIComponent(escape(atob(trimmed)))); // backward compat: codes from before this change
+  }
+  // Summarize what kind of ICE candidates actually got gathered, so a stuck
+  // connection is diagnosable instead of a silent black box: no candidates
+  // beyond "host" usually means the STUN servers weren't reachable (network
+  // policy blocking outbound STUN), which makes a direct P2P connection
+  // across two different networks unlikely to succeed.
+  function p2pCandidateSummary(pc) {
+    try {
+      const sdp = (pc.localDescription && pc.localDescription.sdp) || '';
+      const counts = {};
+      const re = /a=candidate:\S+ \d+ \S+ \d+ \S+ \d+ typ (\w+)/g;
+      let m;
+      while ((m = re.exec(sdp))) counts[m[1]] = (counts[m[1]] || 0) + 1;
+      const parts = Object.keys(counts).map(k => `${k}:${counts[k]}`);
+      return parts.length ? parts.join(', ') : '(no candidates gathered)';
+    } catch (e) { return '(unknown)'; }
+  }
+  // Reports live status via onStatus('checking'|'connected'|'failed', diagString)
+  // as it happens -- and again, once, if still not connected after a fairly
+  // generous grace period (this does NOT tear anything down or declare the
+  // attempt dead; ICE checks can legitimately keep going well past this,
+  // especially since a human copy-pasting the other half of the code in
+  // between is part of the normal flow here, not an error condition).
+  function p2pWatchConnection(pc, onStatus) {
+    let cancelled = false;
+    const report = () => {
+      if (cancelled) return;
+      const state = pc.connectionState || pc.iceConnectionState;
+      const diag = `ice=${pc.iceConnectionState} conn=${pc.connectionState || 'n/a'} candidates=${p2pCandidateSummary(pc)}`;
+      if (state === 'connected' || state === 'completed') onStatus('connected', diag);
+      else if (state === 'failed') onStatus('failed', diag);
+      else onStatus('checking', diag);
+    };
+    pc.addEventListener('connectionstatechange', report);
+    pc.addEventListener('iceconnectionstatechange', report);
+    const slowTimer = setTimeout(() => { if (!cancelled) report(); }, 15000);
+    report();
+    return () => { cancelled = true; clearTimeout(slowTimer); pc.removeEventListener('connectionstatechange', report); pc.removeEventListener('iceconnectionstatechange', report); };
+  }
+
+  const P2P = (() => {
+    let mode = null; // 'host' | 'guest' | null
+    const pendingInvites = new Map(); // inviteId (local/ephemeral, UI bookkeeping only) -> { pc, channel, watch: {cancel} }
+    const activePeers = new Map();    // guest's real CLIENT_ID -> { pc, channel }, once identified
+    let guestPc = null;
+    let guestChannel = null;
+    let outboundQueue = [];
+
+    function ready() {
+      document.dispatchEvent(new CustomEvent('lrmp_transport_ready'));
+    }
+    function closed() {
+      document.dispatchEvent(new CustomEvent('lrmp_ws_closed', { detail: { url: '(p2p)' } }));
+    }
+
+    // The host can't know a guest's real (persistent, localStorage-backed)
+    // CLIENT_ID until after the data channel is open -- SDP offer/answer
+    // exchange happens before that. So instead of the host inventing an id
+    // for the guest (which would desync every "is this me" check the rest
+    // of the client does against its own CLIENT_ID), the guest announces
+    // its real id as the very first message the instant the channel opens,
+    // and the host only registers the connection with HostEngine once that
+    // arrives -- mirroring how the real server keys clients off the
+    // client-supplied ?client= query param.
+    function wireHostChannel(pc, channel, inviteId, watchState) {
+      let realClientId = null;
+      channel.addEventListener('message', (ev) => {
+        let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+        if (!realClientId) {
+          if (m && m.type === '_p2p_hello' && m.clientId) {
+            realClientId = m.clientId;
+            if (watchState && watchState.cancel) watchState.cancel();
+            pendingInvites.delete(inviteId);
+            activePeers.set(realClientId, { pc, channel });
+            HostEngine.registerClient(realClientId, (obj) => { try { channel.send(JSON.stringify(obj)); } catch (e) {} });
+            document.dispatchEvent(new CustomEvent('lrmp_p2p_peer_connected', { detail: { inviteId, clientId: realClientId } }));
+          }
+          return; // never forward the handshake message itself into the engine
+        }
+        HostEngine.handleMessage(realClientId, m);
+      });
+      channel.addEventListener('close', () => {
+        if (realClientId) { HostEngine.unregisterClient(realClientId); activePeers.delete(realClientId); }
+      });
+    }
+
+    // Host side: call once to become the session authority (registers the
+    // host's own client into the engine via a local loopback "connection").
+    function hostBegin() {
+      mode = 'host';
+      HostEngine.reset();
+      HostEngine.registerClient(CLIENT_ID, (obj) => { setTimeout(() => { try { processServerMessage(obj); } catch (e) {} }, 0); });
+      window.LRMP._wsSend = (obj) => { setTimeout(() => { try { HostEngine.handleMessage(CLIENT_ID, obj); } catch (e) {} }, 0); };
+      window.LRMP._wsOpen = true;
+      ready();
+    }
+
+    // Host side: create an invite code for one additional guest.
+    async function hostCreateInvite() {
+      const inviteId = hostUid('invite-');
+      const iceServers = p2pGetIceServers();
+      const pc = new RTCPeerConnection({ iceServers });
+      const channel = pc.createDataChannel('lrmp');
+      const watchState = { cancel: null };
+      wireHostChannel(pc, channel, inviteId, watchState);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await p2pWaitForIce(pc);
+      pendingInvites.set(inviteId, { pc, channel, watchState });
+      return { guestClientId: inviteId, code: await p2pEncode(pc.localDescription) };
+    }
+
+    // Host side: consume the guest's answer code to finish that connection.
+    async function hostAcceptAnswer(inviteId, answerCode) {
+      const entry = pendingInvites.get(inviteId);
+      if (!entry) throw new Error('No pending invite for that code (generate a new one).');
+      const answer = await p2pDecode(answerCode);
+      await entry.pc.setRemoteDescription(answer);
+      // Only start watching for stuck/failed *now* -- this is the earliest
+      // point both sides of the SDP exchange are actually done, so it's the
+      // right moment to start judging connectivity rather than human speed.
+      // Deliberately NOT removed from pendingInvites yet: it stays there
+      // (still connecting) until it either succeeds (wireHostChannel moves
+      // it to activePeers) or the person cancels it -- otherwise a stuck
+      // attempt would be unreachable to actually close if cancelled.
+      entry.watchState.cancel = p2pWatchConnection(entry.pc, (status, diag) => {
+        document.dispatchEvent(new CustomEvent('lrmp_p2p_invite_status', { detail: { inviteId, status, diag } }));
+      });
+    }
+
+    // Host side: abandon a pending invite (before or after the answer was
+    // submitted) and actually close its peer connection, instead of just
+    // hiding it in the UI and leaving it running in the background.
+    function cancelInvite(inviteId) {
+      const entry = pendingInvites.get(inviteId);
+      if (!entry) return;
+      if (entry.watchState && entry.watchState.cancel) entry.watchState.cancel();
+      try { entry.channel.close(); } catch (e) {}
+      try { entry.pc.close(); } catch (e) {}
+      pendingInvites.delete(inviteId);
+    }
+
+    // Guest side: consume the host's offer code, produce an answer code.
+    async function guestAcceptOffer(offerCode) {
+      mode = 'guest';
+      const iceServers = p2pGetIceServers();
+      const pc = new RTCPeerConnection({ iceServers });
+      guestPc = pc;
+
+      // Register this now, but don't wait on it: the data channel can't
+      // actually arrive until the host has our answer code and applies it
+      // (hostAcceptAnswer), which can't happen until *this* function
+      // returns that code. Blocking the return on the channel here would
+      // deadlock -- which is exactly what was causing "Connecting..." to
+      // hang forever with no answer code ever shown.
+      pc.addEventListener('datachannel', (ev) => {
+        const channel = ev.channel;
+        guestChannel = channel;
+
+        channel.addEventListener('open', () => {
+          if (cancelGuestWatch) cancelGuestWatch();
+          // Announce our real, persistent client id before anything else so
+          // the host registers this connection under the same id every other
+          // part of the client already uses for "is this me" comparisons.
+          try { channel.send(JSON.stringify({ type: '_p2p_hello', clientId: CLIENT_ID })); } catch (e) {}
+
+          window.LRMP._wsOpen = true;
+          window.LRMP._wsSend = (obj) => {
+            try {
+              const s = JSON.stringify(obj);
+              if (channel.readyState !== 'open') { outboundQueue.push(s); return; }
+              channel.send(s);
+            } catch (e) { outboundQueue.push(JSON.stringify(obj)); }
+          };
+          setTimeout(() => { while (outboundQueue.length && channel.readyState === 'open') { try { channel.send(outboundQueue.shift()); } catch (e) { break; } } }, 50);
+          ready();
+        });
+        channel.addEventListener('message', (ev2) => {
+          try { processServerMessage(JSON.parse(ev2.data)); } catch (e) {}
+        });
+        channel.addEventListener('close', () => { window.LRMP._wsOpen = false; closed(); });
+      });
+
+      const offer = await p2pDecode(offerCode);
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await p2pWaitForIce(pc);
+
+      // Guest already has BOTH descriptions applied at this point (unlike
+      // the host, who's still waiting on a human to paste the answer back),
+      // so its ICE agent starts trying immediately -- one-sidedly, since the
+      // host hasn't caught up yet. That's expected and not itself a failure;
+      // report live status so the UI can show real progress either way.
+      const cancelGuestWatch = p2pWatchConnection(pc, (status, diag) => {
+        document.dispatchEvent(new CustomEvent('lrmp_p2p_guest_status', { detail: { status, diag } }));
+      });
+
+      return await p2pEncode(pc.localDescription); // channel wiring above fires later, async
+    }
+
+    function teardown() {
+      for (const { pc, channel, watchState } of pendingInvites.values()) { if (watchState && watchState.cancel) watchState.cancel(); try { channel.close(); } catch (e) {} try { pc.close(); } catch (e) {} }
+      pendingInvites.clear();
+      for (const { pc, channel } of activePeers.values()) { try { channel.close(); } catch (e) {} try { pc.close(); } catch (e) {} }
+      activePeers.clear();
+      if (guestChannel) try { guestChannel.close(); } catch (e) {}
+      if (guestPc) try { guestPc.close(); } catch (e) {}
+      guestChannel = null; guestPc = null;
+      HostEngine.reset();
+      outboundQueue = [];
+      mode = null;
+    }
+
+    return { hostBegin, hostCreateInvite, hostAcceptAnswer, cancelInvite, guestAcceptOffer, teardown, get mode() { return mode; } };
+  })();
+
+  window.LRMP._P2P = P2P; // exposed for debugging / the connect-mode UI below
+
+
   /* ---------- Networking helpers ---------- */
 let ws = null;
 let pending = [];
@@ -2010,12 +2941,6 @@ function buildTrackData() {
       return;
     }
 
-    // tracks list
-    if (m.type === 'tracks_list') {
-      document.dispatchEvent(new CustomEvent('lrmp_tracks_list', { detail: m.tracks || [] }));
-      return;
-    }
-
   // request_track for host -> reply with track
   if (m.type === 'request_track') {
     try {
@@ -2780,28 +3705,34 @@ function main() {
         color: SAFE_GET(COLOR_KEY, SAVED_COLOR),
         entities: [],
         panel: 'none',
-        tracks: [],
-        search: '',
-        page: 1,
-        selectedTrack: false,
-        loadPasscode: '',
         hostDisplayName: '',
-        hostPublic: true,
-        hostPasscode: Math.random().toString(36).slice(2,8).toUpperCase(),
-        showPasscode: false,
         inTrackId: null,
         participants: [],
         isHost: false,
         chatVisible: false,
-        loadTab: 'public',
         shareLayers: false,
+
+        // connection transport chooser / P2P manual signaling state
+        transportReady: false,
+        connectMode: null,        // null | 'ws' | 'p2p-host' | 'p2p-guest'
+        p2pOfferCode: '',         // host: code to send to a joining guest
+        p2pPendingGuestId: null,  // host: which pending invite the answer box below applies to
+        p2pAnswerInput: '',       // host: guest's answer code, pasted here
+        p2pOfferInput: '',        // guest: host's offer code, pasted here
+        p2pAnswerCode: '',        // guest: code to send back to the host
+        p2pError: null,
+        p2pDiag: '',              // live ICE/connection status text, for troubleshooting stuck connections
       };
       this.prevParticipantsMap = {};
-      this.onTracksList = this.onTracksList.bind(this);
       this.onParticipants = this.onParticipants.bind(this);
       this.onServerAck = this.onServerAck.bind(this);
       this.onWsOpen = this.onWsOpen.bind(this);
       this.onWsClose = this.onWsClose.bind(this);
+      this.onTransportReady = this.onTransportReady.bind(this);
+      this.onTransportFailed = this.onTransportFailed.bind(this);
+      this.onP2PPeerConnected = this.onP2PPeerConnected.bind(this);
+      this.onP2PInviteStatus = this.onP2PInviteStatus.bind(this);
+      this.onP2PGuestStatus = this.onP2PGuestStatus.bind(this);
       this.onChatHidden = this.onChatHidden.bind(this);
       this.onKicked = this.onKicked.bind(this);
 
@@ -2837,13 +3768,17 @@ function main() {
 
 
       componentDidMount() {
-        document.addEventListener('lrmp_tracks_list', this.onTracksList);
         document.addEventListener('lrmp_participants', this.onParticipants);
         document.addEventListener('lrmp_server_ack', this.onServerAck);
         document.addEventListener('lrmp_ws_open', this.onWsOpen);
         document.addEventListener('lrmp_ws_closed', this.onWsClose);
         document.addEventListener('lrmp_chat_hidden', this.onChatHidden);
         document.addEventListener('lrmp_kicked', this.onKicked);
+        document.addEventListener('lrmp_transport_ready', this.onTransportReady);
+        document.addEventListener('lrmp_transport_failed', this.onTransportFailed);
+        document.addEventListener('lrmp_p2p_peer_connected', this.onP2PPeerConnected);
+        document.addEventListener('lrmp_p2p_invite_status', this.onP2PInviteStatus);
+        document.addEventListener('lrmp_p2p_guest_status', this.onP2PGuestStatus);
 
         const st = window.store && window.store.getState && window.store.getState();
         if (st && st.trackData && st.trackData.label) this.setState({ hostDisplayName: st.trackData.label });
@@ -2895,13 +3830,17 @@ function main() {
     window[k] = this.state;
 
       document.removeEventListener("pointermove", this._onDocPointerMove, true);
-        document.removeEventListener('lrmp_tracks_list', this.onTracksList);
         document.removeEventListener('lrmp_participants', this.onParticipants);
         document.removeEventListener('lrmp_server_ack', this.onServerAck);
         document.removeEventListener('lrmp_ws_open', this.onWsOpen);
         document.removeEventListener('lrmp_ws_closed', this.onWsClose);
         document.removeEventListener('lrmp_chat_hidden', this.onChatHidden);
         document.removeEventListener('lrmp_kicked', this.onKicked);
+        document.removeEventListener('lrmp_transport_ready', this.onTransportReady);
+        document.removeEventListener('lrmp_transport_failed', this.onTransportFailed);
+        document.removeEventListener('lrmp_p2p_peer_connected', this.onP2PPeerConnected);
+        document.removeEventListener('lrmp_p2p_invite_status', this.onP2PInviteStatus);
+        document.removeEventListener('lrmp_p2p_guest_status', this.onP2PGuestStatus);
 
           if (this.unsubscribe) {
               this.unsubscribe();
@@ -2909,7 +3848,63 @@ function main() {
       }
 
       onWsOpen(ev) { this.setState({ connecting: false }); } // i don't think this one actually runs
-      onWsClose(ev) { const url = ev && ev.detail && ev.detail.url ? ev.detail.url : '(server)'; Chat.addSystem('Disconnected from server'); this.setState({ connecting: false }); }
+      onWsClose(ev) { const url = ev && ev.detail && ev.detail.url ? ev.detail.url : '(server)'; Chat.addSystem('Disconnected from server'); this.setState({ connecting: false, transportReady: false }); }
+
+      // Fires once the chosen transport (legacy WS, P2P host loopback, or
+      // P2P guest data channel) is actually usable. Same post-connect
+      // sequence regardless of which transport got us here.
+      onTransportReady() {
+        window.LRMP.active = true;
+        try { installCommandMirrors(); } catch (e) { console.warn("installCommandMirrors failed:", e); }
+        try { installEngineMirrors(); } catch (e) { console.warn("installEngineMirrors failed:", e); }
+        try { installDispatchDetector(); } catch (e) { console.warn("installDispatchDetector failed:", e); }
+        this.setState({ connecting: false, transportReady: true, chatVisible: true });
+        const name = SAFE_GET(USERNAME_KEY, this.state.username || '');
+        const color = SAFE_GET(COLOR_KEY, DEFAULT_COLOR);
+        const version = CLIENT_VERSION;
+        if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'hello', clientId: CLIENT_ID, username: name, color, version });
+      }
+      onTransportFailed(ev) {
+        const reason = ev && ev.detail && ev.detail.reason;
+        Chat.addSystem(reason === 'p2p' ? 'Failed to establish peer-to-peer connection' : 'Failed to connect to server');
+        this.setState({ connecting: false, failedToConnect: true, chatVisible: true });
+      }
+
+      // Host side: fires once a guest's data channel actually opens and
+      // identifies itself -- this is the real "connected" signal, unlike
+      // hostAcceptAnswer() resolving (which only means the answer code was
+      // syntactically valid, not that a live connection exists yet).
+      onP2PPeerConnected(ev) {
+        const { inviteId } = (ev && ev.detail) || {};
+        if (!this.state.p2pPendingGuestId || inviteId === this.state.p2pPendingGuestId) {
+          this.setState({ p2pPendingGuestId: null, p2pError: null, p2pDiag: '' });
+        }
+        Chat.addSystem('Peer connected.');
+      }
+      // Host side: live status while waiting for a specific pending invite
+      // to actually finish connecting after "Connect peer" was clicked.
+      onP2PInviteStatus(ev) {
+        const { inviteId, status, diag } = (ev && ev.detail) || {};
+        if (!this.state.p2pPendingGuestId || inviteId !== this.state.p2pPendingGuestId) return;
+        if (status === 'failed') {
+          this.setState({ p2pError: "Connection failed. This usually means a firewall or NAT is blocking a direct connection between you two. Diagnostic: " + diag, p2pDiag: diag });
+        } else {
+          this.setState({ p2pDiag: diag, p2pError: null });
+        }
+      }
+      // Guest side: live status while waiting for the host to finish their
+      // half. Our own ICE agent starts trying immediately once we've        YO CLAUDE WDYM BY ICE AGENT YOU CANNOT ADD THAT TO MY MOD
+      // generated an answer code, well before the host necessarily gets to
+      // paste it -- that's normal, not itself a failure.
+      onP2PGuestStatus(ev) {
+        const { status, diag } = (ev && ev.detail) || {};
+        if (this.state.transportReady) return; // already connected, ignore late/stale reports
+        if (status === 'failed') {
+          this.setState({ p2pError: "Connection failed. This usually means a firewall or NAT is blocking a direct connection between you two. Diagnostic: " + diag, p2pDiag: diag });
+        } else {
+          this.setState({ p2pDiag: diag });
+        }
+      }
 
       onKicked(ev) {
         const m = ev.detail || {};
@@ -2987,6 +3982,7 @@ function main() {
         if (m.type === 'hello_ack' && forMe) {
           if (m.success) {
           Chat.addSystem(m.connectedMessage);
+          Chat.show();
           } else {
           Chat.addSystem('Failed to connect: outdated version! Opening new version in 2 seconds!');
             setTimeout(() => {
@@ -3057,12 +4053,6 @@ function main() {
       }
 
       onChatHidden() { this.setState({ chatVisible: false }); }
-
-      onTracksList(ev) {
-        const arr = Array.isArray(ev.detail) ? ev.detail.slice() : [];
-        arr.sort((a,b)=> (String((a.host||'')+' '+(a.name||'')).toLowerCase() < String((b.host||'')+' '+(b.name||'')).toLowerCase() ? -1 : 1));
-        this.setState({ tracks: arr, page: 1, selectedTrack: false }); // i should change this to make a "Tracks List Changed [Reload List]" appear or smth
-      }
 
       onParticipants(ev) {
         const d = ev.detail || {};
@@ -3142,40 +4132,16 @@ function main() {
         const next = this.state.panel === panel ? 'none' : panel;
         this.setState({ panel: next });
         if (next === 'load') {
-          this.setState({ loadTab: 'public' }, () => {
-            if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'list_tracks', search: this.state.search || '' });
-          });
+          if (!this.state.transportReady) this.startP2PGuest();
+        } else if (next === 'host') {
+          if (!this.state.transportReady) this.startP2PHost();
         }
-      }
-
-      selectTrack(track) { this.setState({ selectedTrack: track, loadPasscode: '' }); }
-
-      joinSelected() {
-          const changes = window.store.getState()?.simulator?.engine?.getChangeCount() || 0;
-          let discardUnsaved = true;
-          if (changes > 2) {
-              discardUnsaved = confirm("Are you sure you want to collaborate? You have unsaved changes!");
-          }
-          if (!discardUnsaved) return;
-
-        if (this.state.selectedTrack.id) {
-          Chat.addSystem('Requesting join...');
-          if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'join_track', trackId: this.state.selectedTrack.id, passcode: this.state.loadPasscode || null, clientId: CLIENT_ID, username: this.state.username || '' });
-          return;
-        }
-        const pass = (this.state.loadPasscode || '').trim();
-        if (pass && pass.length) {
-          Chat.addSystem('Attempting private join...');
-          if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'join_track', passcode: pass, clientId: CLIENT_ID, username: this.state.username || '' });
-          return;
-        }
-        Chat.addSystem('Select a track first');
       }
 
       requestHost() {
         const snap = buildTrackData();
         if (!snap) { Chat.addSystem('Failed to read engine snapshot; cannot host'); return; }
-        const payload = { name: this.state.hostDisplayName || (window.LRMP.currentTrackName || `${this.state.username}'s Track`), host: this.state.username || '', public: !!this.state.hostPublic, passcode: this.state.hostPublic ? null : this.state.hostPasscode, engine: snap };
+        const payload = { name: this.state.hostDisplayName || (window.LRMP.currentTrackName || `${this.state.username}'s Track`), host: this.state.username || '', engine: snap };
         Chat.addSystem('Requesting host...');
           if (window.LRMP._wsSend) {
               window.LRMP._wsSend({ type: 'host_track', payload, clientId: CLIENT_ID, settings: {shareLayers: !!this.state.shareLayers} });
@@ -3186,12 +4152,19 @@ function main() {
         if (!this.state.inTrackId) { Chat.addSystem('Not in track'); return; }
         if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'leave_track', trackId: this.state.inTrackId, clientId: CLIENT_ID });
         Chat.addSystem('Requesting leave...');
+        // disconnect
+        this.backToConnectChooser();
       }
 
       endHosting() {
         if (!this.state.inTrackId) return;
         if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'end_track', trackId: this.state.inTrackId, clientId: CLIENT_ID });
         Chat.addSystem('End hosting requested');
+        // Ending the track ends the whole session -- disconnect every
+        // connected guest and tear down the host engine. Small delay so the
+        // end_track message above (dispatched via a deferred loopback) has
+        // actually reached everyone before their connections get closed.
+        setTimeout(() => this.backToConnectChooser(), 100);
       }
 
       kickClient(cid) {
@@ -3203,8 +4176,7 @@ function main() {
       // for host editing page
       saveHostChanges() {
         if (!this.state.inTrackId || !this.state.isHost) return;
-        // update track metadata (name, public, passcode)
-        const payload = { name: this.state.hostDisplayName || (window.LRMP.currentTrackName || 'Track'), public: !!this.state.hostPublic, passcode: this.state.hostPublic ? null : this.state.hostPasscode };
+        const payload = { name: this.state.hostDisplayName || (window.LRMP.currentTrackName || 'Track') };
         if (window.LRMP && window.LRMP._wsSend) {
           window.LRMP._wsSend({ type: 'update_track', trackId: this.state.inTrackId, payload, settings: {shareLayers: !!this.state.shareLayers} });
           Chat.addSystem('Host settings saved.');
@@ -3218,33 +4190,19 @@ function main() {
     toggleActive() {
       const next = !this.state.active;
       if (next) {
-        this.setState({ active: true, connecting: true, failedToConnect: false }, () => {
-          Chat.show();
+        // Opening the panel doesn't connect to anything by itself anymore --
+        // clicking "Host a P2P session" or "Join a P2P session" (the
+        // Host/Load tabs below) is what actually starts a transport, via
+        // startP2PHost() / startP2PGuest().
+        this.setState({ active: true, connecting: false, failedToConnect: false, transportReady: false, connectMode: null }, () => {
           SAFE_SET(USERNAME_KEY, this.state.username);
           SAFE_SET(COLOR_KEY, this.state.color || DEFAULT_COLOR);
-          connectWS((ok) => {
-            if (ok) {
-              // mark active first
-              window.LRMP.active = true;
-
-              // Install things such as viruses and "wurst" from minecraft
-              try { installCommandMirrors(); } catch (e) { console.warn("installCommandMirrors failed:", e); }
-              try { installEngineMirrors(); } catch (e) { console.warn("installEngineMirrors failed:", e); }
-              try { installDispatchDetector(); } catch (e) { console.warn("installDispatchDetector failed:", e); }
-
-              this.setState({ connecting: false, chatVisible: true });
-              const name = SAFE_GET(USERNAME_KEY, this.state.username || '');
-              const color = SAFE_GET(COLOR_KEY, DEFAULT_COLOR);
-              const version = CLIENT_VERSION;
-              if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'hello', clientId: CLIENT_ID, username: name, color, version });
-            } else {
-              Chat.addSystem('Failed to connect to server');
-              this.setState({ connecting: false, failedToConnect: true, chatVisible: true});
-            }
-          });
         });
       } else {
         if (ws) try { ws.close(); } catch (e) {}
+        try { P2P.teardown(); } catch (e) {}
+        window.LRMP._wsSend = null;
+        window.LRMP._wsOpen = false;
 
         // disable/uninstall things before flipping active off
         try { uninstallCommandMirrors(); } catch (e) { console.warn("uninstallCommandMirrors failed:", e); }
@@ -3253,7 +4211,7 @@ function main() {
 
         window.LRMP.active = false;
         Chat.hide();
-        this.setState({ active: false, connecting: false, inTrackId: null, participants: [], isHost: false, chatVisible: false });
+        this.setState({ active: false, connecting: false, transportReady: false, connectMode: null, inTrackId: null, participants: [], isHost: false, chatVisible: false });
         window.LRMP.currentTrackId = null;
         window.LRMP.history = [{undo: [], redo: []}];
         window.LRMP.historyIndex = 0;
@@ -3261,6 +4219,76 @@ function main() {
         window.store.dispatch(setEditScene(new Millions.Scene()));
         window.LRMP.VIEW_MODE.disable()
       }
+    }
+
+    // ---- connection actions (called from the Host/Load tabs) ----
+
+    // Not wired to any button anymore (removed per request), but left here
+    // in case you want a way back to the dedicated-server mode later --
+    // lrmp_server.js itself wasn't touched, this still works with it as-is.
+    connectViaLegacyServer() {
+      this.setState({ connectMode: 'ws', connecting: true, failedToConnect: false });
+      connectWS((ok) => {
+        if (ok) document.dispatchEvent(new CustomEvent('lrmp_transport_ready'));
+        else document.dispatchEvent(new CustomEvent('lrmp_transport_failed', { detail: { reason: 'ws' } }));
+      });
+    }
+
+    startP2PHost() {
+      this.setState({ connectMode: 'p2p-host', connecting: false, failedToConnect: false, p2pError: null, p2pDiag: '' });
+      try {
+        P2P.hostBegin(); // local loopback registration; dispatches lrmp_transport_ready itself
+      } catch (e) {
+        this.setState({ p2pError: String((e && e.message) || e) });
+      }
+    }
+
+    async createP2PInvite() {
+      this.setState({ p2pError: null, p2pDiag: '', p2pCreatingInvite: true });
+      try {
+        const { guestClientId, code } = await P2P.hostCreateInvite();
+        this.setState({ p2pPendingGuestId: guestClientId, p2pOfferCode: code, p2pAnswerInput: '', p2pCreatingInvite: false });
+      } catch (e) {
+        this.setState({ p2pError: String((e && e.message) || e), p2pCreatingInvite: false });
+      }
+    }
+
+    async submitP2PAnswer() {
+      this.setState({ p2pError: null, p2pDiag: '' });
+      try {
+        await P2P.hostAcceptAnswer(this.state.p2pPendingGuestId, this.state.p2pAnswerInput);
+        // Don't declare success yet -- keep p2pPendingGuestId set so
+        // onP2PPeerConnected/onP2PInviteStatus (real confirmation, once the
+        // channel actually opens, or a definitive failure) can match against
+        // it and update the UI themselves.
+        this.setState({ p2pOfferCode: '', p2pAnswerInput: '' });
+      } catch (e) {
+        this.setState({ p2pError: String((e && e.message) || e) });
+      }
+    }
+
+    startP2PGuest() {
+      this.setState({ connectMode: 'p2p-guest', connecting: false, failedToConnect: false, p2pError: null, p2pDiag: '', p2pOfferInput: '', p2pAnswerCode: '' });
+    }
+
+    async submitP2POffer() {
+      this.setState({ connecting: true, p2pError: null, p2pDiag: '' });
+      try {
+        const answerCode = await P2P.guestAcceptOffer(this.state.p2pOfferInput);
+        this.setState({ p2pAnswerCode: answerCode, connecting: false });
+        // lrmp_transport_ready fires on its own once the channel actually opens
+      } catch (e) {
+        this.setState({ p2pError: String((e && e.message) || e), connecting: false });
+      }
+    }
+
+    backToConnectChooser() {
+      try { P2P.teardown(); } catch (e) {}
+      if (ws) try { ws.close(); } catch (e) {}
+      window.LRMP._wsSend = null;
+      window.LRMP._wsOpen = false;
+      window.LRMP.currentTrackId = null;
+      this.setState({ connectMode: null, connecting: false, failedToConnect: false, transportReady: false, p2pError: null, p2pDiag: '', p2pOfferCode: '', p2pAnswerCode: '', p2pOfferInput: '', p2pAnswerInput: '', p2pPendingGuestId: null, panel: 'none', inTrackId: null, participants: [], isHost: false });
     }
 
     toggleHidden() {
@@ -3309,6 +4337,41 @@ function main() {
         ]);
       }
 
+      // Paste-code / generate-answer UI for joining a P2P session. Embedded
+      // directly in the "Join a P2P session" tab body (see render()) rather
+      // than a separate screen, since there's no longer a track directory
+      // to browse until you've actually connected to someone's session.
+      renderP2PGuestConnect() {
+        const e = React.createElement;
+        const mono = { width: '100%', minHeight: 70, fontFamily: 'monospace', fontSize: 11, marginTop: 6, marginBottom: 6, boxSizing: 'border-box' };
+        const errNode = this.state.p2pError ? e('div', { style: { color: '#b00020', fontSize: 12, marginTop: 6, whiteSpace: 'pre-wrap' } }, this.state.p2pError) : null;
+        const copyBtn = (text, label, stateKey) => e('button', { style: { marginRight: 6 }, onClick: () => {
+          try { navigator.clipboard.writeText(text); } catch (e) {}
+          this.setState({ [stateKey]: true });
+          clearTimeout(this['_' + stateKey + 'Timer']);
+          this['_' + stateKey + 'Timer'] = setTimeout(() => this.setState({ [stateKey]: false }), 1500);
+        } }, this.state[stateKey] ? 'Copied!' : (label || 'Copy'));
+
+        const body = !this.state.p2pAnswerCode
+          ? e('div', null,
+              e('div', { style: { marginBottom: 6 } }, "Paste the invite code your friend sent you:"),
+              e('textarea', { value: this.state.p2pOfferInput, onChange: ev => this.setState({ p2pOfferInput: ev.target.value }), style: mono }),
+              e('button', { style: { width: '100%' }, disabled: this.state.connecting, onClick: () => this.submitP2POffer() }, this.state.connecting ? 'Generating...' : 'Generate answer code')
+            )
+          : e('div', null,
+              e('div', { style: { marginBottom: 6 } }, 'Send this answer code back to your friend:'),
+              e('textarea', { readOnly: true, value: this.state.p2pAnswerCode, style: mono, onFocus: ev => ev.target.select() }),
+              copyBtn(this.state.p2pAnswerCode, 'Copy answer code', 'p2pAnswerCopied'),
+              e('div', { style: { marginTop: 6, fontSize: 11, color: '#666' } }, 'Waiting for your friend to accept...'),
+              this.state.p2pDiag ? e('div', { style: { marginTop: 4, fontSize: 10, color: '#999', fontFamily: 'monospace' } }, this.state.p2pDiag) : null
+            );
+
+        return e('div', { style:{ border:'1px solid #ddd', padding:8, borderRadius:6, background:'#fafafa', marginBottom:8 } },
+          body, errNode,
+          e('button', { style: { marginTop: 10 }, onClick: () => this.backToConnectChooser() }, 'Cancel')
+        );
+      }
+
       render() {
         const e = React.createElement;
         const connectingIndicator = this.state.connecting ? e('div', { style:{ marginBottom:6, color:'#444' } }, 'Connecting...') : null;
@@ -3330,12 +4393,6 @@ function main() {
           return e('div', null, e('button', { style: { width:'100%', backgroundColor: 'lightblue' }, onClick: ()=>this.toggleHidden() }, 'Multiplayer Mod'))
         }
 
-        const q = (this.state.search || '').toLowerCase();
-        const filteredAll = (this.state.tracks || []).filter(t => !q ? true : (((t.host||'')+' '+(t.name||'')).toLowerCase().includes(q)));
-        const filtered = (this.state.loadTab === 'public') ? filteredAll.filter(t => t.public) : filteredAll.filter(t => !t.public);
-        const pageSize = 10, total = filtered.length, pages = Math.max(1, Math.ceil(total / pageSize));
-        const page = Math.max(1, Math.min(this.state.page || 1, pages));
-        const start = (page-1)*pageSize, pageItems = filtered.slice(start, start+pageSize);
         const inTrackName = window.LRMP.currentTrackName || (this.state.inTrackId ? 'In track' : null);
 
         return e('div', null,
@@ -3359,60 +4416,25 @@ function main() {
 
           // Load / Host toggle
           e('div', { style: { display:'flex', gap:8, marginTop:8, marginBottom:8 } },
-            e('button', { onClick: ()=>this.togglePanel('load'), style: this.state.panel === 'load' ? { backgroundColor: 'lightblue' } : null }, 'Load Track'),
-            (this.state.isHost || !window.LRMP.currentTrackId) ? e('button', { onClick: ()=>this.togglePanel('host'), style: this.state.panel === 'host' ? { backgroundColor: 'lightblue' } : null }, this.state.isHost ? 'Host Track Settings' : 'Host Track') : null
+            (!window.LRMP.currentTrackId ? e('button', { onClick: ()=>this.togglePanel('load'), style: this.state.panel === 'load' ? { backgroundColor: 'lightblue' } : null }, 'Join Track') : null),
+            (this.state.isHost || (!window.LRMP.currentTrackId && !(this.state.connectMode === 'p2p-guest' && this.state.transportReady)))
+              ? e('button', { onClick: ()=>this.togglePanel('host'), style: this.state.panel === 'host' ? { backgroundColor: 'lightblue' } : null }, this.state.isHost ? 'Host Track Settings' : 'Host Track') : null
           ),
 
-          // Load tab
-          this.state.panel === 'load' ? e('div', { style:{ border:'1px solid #ddd', padding:8, borderRadius:6, background:'#fafafa', marginBottom:8 } }, [
-            e('div', { style: { display:'flex', gap:8, marginBottom:8 } },
-              e('button', { onClick: ()=>this.setState({ loadTab: 'public', page: 1 }), style: this.state.loadTab === 'public' ? { backgroundColor: 'lightblue' } : null }, 'Public'),
-              e('button', { onClick: ()=>this.setState({ loadTab: 'private', page: 1 }), style: this.state.loadTab === 'private' ? { backgroundColor: 'lightblue' } : null }, 'Private')
-            ),
-            e('div', { style:{ display:'flex', gap:8, marginBottom:8 } },
-              e('input', { placeholder:'Search tracks...', value: this.state.search, onChange: ev=>this.setState({ search: ev.target.value, page:1 }), style:{ flex:'1 1 auto' } }),
-              e('button', { onClick: ()=>{ if (window.LRMP._wsSend) window.LRMP._wsSend({ type: 'list_tracks', search: this.state.search || '' }); } }, 'Search')
-            ),
-            pageItems.map(t => {
-              const id = t.trackId || t.id || '';
-              const selected = this.state.selectedTrack.id === id;
-              return e('div', { key: 't-'+id, onClick: ()=>this.selectTrack(t), style: { border:'1px solid #eee', padding:'8px', marginBottom:'8px', background: selected ? 'lightblue' : '#fff', borderRadius:'6px', cursor:'pointer' } }, [
-                e('div', { style: { fontWeight:700, marginBottom:4 } }, `▶︎ ${t.name || 'Track'}`),
-                e('div', { style: { fontSize:12, color:'#666', marginBottom:6 } }, t.host || '(host)'),
-                (!t.public && selected) ? e('div', { style:{ marginTop:6 } }, [
-                  e('input', { placeholder: 'Enter Passcode', value: this.state.loadPasscode, onChange: ev=>this.setState({ loadPasscode: ev.target.value }), onKeyDown: ev => { if (ev.key === 'Enter') { this.joinSelected(); ev.preventDefault(); } }, style:{ marginBottom:8, width:'100%' } }),
-                  window.LRMP.currentTrackId ? "broski ur already in a track rn" : e('button', { onClick: ()=>this.joinSelected() }, 'Collaborate') // i got lazy
-                ]) : null,
-                (t.public && selected) ? e('div', { style:{ marginTop:6 } }, window.LRMP.currentTrackId ? "broski ur already in a track rn" : e('button', { onClick: ()=>this.joinSelected() }, 'Collaborate')) : null
-              ]);
-            }),
-            total > pageSize ? e('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center' } },
-              e('button', { onClick: ()=>this.setState({ page: Math.max(1, page - 1) }) }, 'Prev'),
-              e('div', null, `Page ${page} of ${pages}`),
-              e('button', { onClick: ()=>this.setState({ page: Math.min(pages, page + 1) }) }, 'Next')
-            ) : null
-          ]) : null,
+          // Join tab
+          this.state.panel === 'load' ? (
+            !this.state.transportReady
+              ? this.renderP2PGuestConnect()
+              : (!this.state.inTrackId
+                  ? e('div', { style:{ border:'1px solid #ddd', padding:8, borderRadius:6, background:'#fafafa', marginBottom:8 } },
+                      e('div', null, "Connected. Waiting for the host to start a track..."))
+                  : null) // already in the track -- the in-track panel below covers it
+          ) : null,
 
           // Host panel
           this.state.panel === 'host' ? e('div', { style:{ border:'1px solid #ddd', padding:8, borderRadius:6, background:'#fafafa', marginBottom:8 } }, [
             e('div', { style: { textAlign: 'left' } }, 'Track Name:'),
             e('input', { placeholder: `${this.state.username}'s Track`, value: this.state.hostDisplayName || (window.LRMP.currentTrackName || ''), onChange: ev=>this.setState({ hostDisplayName: ev.target.value }), style:{ width:'100%', marginBottom:8 } }),
-            e('div', { style:{ marginBottom:8 } },
-              e('label', { style:{ marginRight:12 } }, e('input', { type: 'radio', checked: this.state.hostPublic, onChange: ()=>this.setState({ hostPublic: true }) }), ' Public'),
-              e('label', null, e('input', { type: 'radio', checked: !this.state.hostPublic, onChange: ()=>this.setState({ hostPublic: false }) }), ' Private')
-            ),!this.state.hostPublic ?
-            e('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between'} },
-              e('div', { style: { textAlign: 'left' } }, 'Passcode: '),
-              e('div', { style: { display: 'flex', alignItems: 'center' } },
-                e("button", emojiButtonProps(`Copy Passcode`, () => {navigator.clipboard.writeText(this.state.hostPasscode); this.setState({ copiedPasscode: true })}), this.state.copiedPasscode ? '✅' : '📋'),
-                e('input', {
-                type: this.state.showPasscode ? 'text' : 'password',
-                value: this.state.hostPasscode,
-                onChange: ev => this.setState({ hostPasscode: ev.target.value, copiedPasscode: false }),
-                style: { marginRight: '5px', width: '150px'}
-            }),
-                e("button", emojiButtonProps(`Show Passcode`, () => this.setState(prevState => ({ showPasscode: !prevState.showPasscode }))), this.state.showPasscode ? '🔒' : '👁‍🗨'))
-             ) : null,
             e("div", { style: { height: "1px", backgroundColor: "#ccc", margin: "8px 0", flex: "0 0 auto" } }), // divider
 
             // extra settings
@@ -3428,7 +4450,27 @@ function main() {
             e('div', { style:{ marginTop:6 } }, this.state.inTrackId ? [
               e('div', { style:{ fontWeight:700, marginBottom:6 } }, 'Participants:'),
               (this.state.participants && this.state.participants.length) ? this.state.participants.map(p => this.renderParticipant(p)) : e('div', null, 'No participants yet'),
-              e('div', { style:{ marginTop:8, display:'flex', gap:8 } }, this.state.isHost ? e('button', { onClick: ()=>this.endHosting() }, 'End Hosting') : e('button', { onClick: ()=>this.leaveTrack() }, 'Leave Track'))
+              e('div', { style:{ marginTop:8, display:'flex', gap:8 } }, this.state.isHost ? e('button', { onClick: ()=>this.endHosting() }, 'End Hosting') : e('button', { onClick: ()=>this.leaveTrack() }, 'Leave Track')),
+              (this.state.connectMode === 'p2p-host') ? e('div', { style:{ marginTop:10, borderTop:'1px solid #eee', paddingTop:8 } },
+                !this.state.p2pPendingGuestId
+                  ? e('button', { onClick: ()=>this.createP2PInvite(), disabled: this.state.p2pCreatingInvite }, this.state.p2pCreatingInvite ? 'Generating invite code...' : '+ Invite another peer')
+                  : this.state.p2pOfferCode
+                  ? e('div', null,
+                      e('div', { style:{ fontSize:11, marginBottom:4 } }, 'Send this code to your friend:'),
+                      e('textarea', { readOnly: true, value: this.state.p2pOfferCode, style: { width:'100%', minHeight:60, fontFamily:'monospace', fontSize:11, boxSizing:'border-box' }, onFocus: ev => ev.target.select() }),
+                      e('button', { onClick: () => { try { navigator.clipboard.writeText(this.state.p2pOfferCode); } catch (e) {} this.setState({ p2pOfferCopied: true }); clearTimeout(this._p2pOfferCopiedTimer); this._p2pOfferCopiedTimer = setTimeout(() => this.setState({ p2pOfferCopied: false }), 1500); } }, this.state.p2pOfferCopied ? 'Copied!' : 'Copy invite code'),
+                      e('div', { style:{ fontSize:11, margin:'6px 0 2px' } }, "Paste their answer code:"),
+                      e('textarea', { value: this.state.p2pAnswerInput, onChange: ev => this.setState({ p2pAnswerInput: ev.target.value }), style: { width:'100%', minHeight:60, fontFamily:'monospace', fontSize:11, boxSizing:'border-box' } }),
+                      e('button', { onClick: ()=>this.submitP2PAnswer() }, 'Connect peer'),
+                      this.state.p2pError ? e('div', { style:{ color:'#b00020', fontSize:11, marginTop:4 } }, this.state.p2pError) : null
+                    )
+                  : e('div', null,
+                      e('div', { style:{ fontSize:11, color:'#666' } }, 'Connecting to peer...'),
+                      this.state.p2pDiag ? e('div', { style:{ marginTop:4, fontSize:10, color:'#999', fontFamily:'monospace' } }, this.state.p2pDiag) : null,
+                      this.state.p2pError ? e('div', { style:{ color:'#b00020', fontSize:11, marginTop:4, whiteSpace:'pre-wrap' } }, this.state.p2pError) : null,
+                      e('button', { style:{ marginTop:6 }, onClick: () => { P2P.cancelInvite(this.state.p2pPendingGuestId); this.setState({ p2pPendingGuestId: null, p2pError: null, p2pDiag: '' }); } }, 'Cancel')
+                    )
+              ) : null
             ] : null)
           ]) : null,
 
