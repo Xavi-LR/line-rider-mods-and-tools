@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi & Tobias Bessler
 // @description  Smooth Pencil but better
-// @version      0.4.21
+// @version      0.4.22
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -82,6 +82,7 @@ function main() {
     multidrawCount: 2,
     multidrawOffsets: [-3, 3],
     multidrawLayers: [],
+    ignoreRotation: false,
     multidrawPenPressure: false,
     equationOffsets: false,
     multidrawEquationStrings: ["sin(x/3)*10", "cos(x/3)*10 * p"],
@@ -194,7 +195,7 @@ function main() {
     const s = sanitizeExpression(expr);
     if (!s) return null;
     try {
-      const fn = new Function('x', 'p', 'const {sin,cos,tan,asin,acos,atan,sqrt,abs,pow,floor,ceil,round,min,max,PI,E}=Math; return (' + s + ');');
+      const fn = new Function('x', 'p', 'const {sin,cos,tan,asin,acos,atan,sqrt,abs,pow,floor,ceil,round,min,max,PI,E,sign}=Math; return (' + s + ');');
       try { fn(1,0.5); } catch (e) {}
       return fn;
     } catch (e) {
@@ -649,6 +650,7 @@ function main() {
       while (offsets.length < count) offsets.push(0)
       const mLayers = Array.isArray(getSetting('multidrawLayers')) ? getSetting('multidrawLayers').slice(0) : []
       const usePenPressure = !!getSetting('multidrawPenPressure')
+      const ignoreRotation = !!getSetting('ignoreRotation')
       const paramsCommon = this._collectCommonParams({ lastPressure: pressureEnd })
       const folderLayerIdsGlobal = paramsCommon.folderLayerIds
       const multicoloredGlobal = paramsCommon.multicolored
@@ -730,11 +732,16 @@ function main() {
             startX = this._multidrawLastEndpoints[i].x
             startY = this._multidrawLastEndpoints[i].y
           } else {
+            if (ignoreRotation) {
+            startX = baseSX + sOff
+            startY = baseSY + sPar
+            } else {
             startX = baseSX + px * sOff + ux * sPar
             startY = baseSY + py * sOff + uy * sPar
+            }
           }
-          const endX = baseFX + px * eOff + ux * ePar
-          const endY = baseFY + py * eOff + uy * ePar
+          const endX = (ignoreRotation ? baseFX + eOff : baseFX + px * eOff + ux * ePar)
+          const endY = (ignoreRotation ? baseFY + ePar : baseFY + py * eOff + uy * ePar)
           const layerFor = (typeof mLayers[i] !== 'undefined' && mLayers[i] !== null) ? mLayers[i] : L.layer
           if (L._canonical) {
             if (getSetting('xy')) {
@@ -1869,6 +1876,7 @@ function main() {
               }
             })
              ),
+            this.renderCheckbox("ignoreRotation", "Ignore Rotation"),
             this.renderCheckbox("multidrawPenPressure", "Pen Pressure (multidraw)")
           ]) : null,
           this.renderCheckbox("penPressure", "Pen Pressure"),
