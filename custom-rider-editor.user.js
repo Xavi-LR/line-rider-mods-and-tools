@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       xavi
 // @description  edit points, bones, and rider sprite
-// @version      3.3.0
+// @version      3.3.1
 // @icon         https://www.linerider.com/favicon.ico
 
 // @match        https://www.linerider.com/*
@@ -11,7 +11,7 @@
 // @match        https://*.surge.sh/*
 
 // @downloadURL  http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/custom-rider-editor.user.js
-// @updateURL    http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/lrmp.user.js
+// @updateURL    http://github.com/Xavi-LR/line-rider-mods-and-tools/raw/main/custom-rider-editor.user.js
 // @homepageURL  https://github.com/Xavi-LR/line-rider-mods-and-tools
 // @grant        none
 // @run-at       document-start
