@@ -3,7 +3,7 @@
 // @namespace    https://www.linerider.com/
 // @author       Xavi & Tobias Bessler
 // @description  Smooth Pencil but better
-// @version      0.4.22
+// @version      0.4.29
 // @icon         https://www.linerider.com/favicon.ico
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -95,6 +95,7 @@ function main() {
     randomMode: false,
     random: 1,
     xy: false,
+    accretionIgnoreSegments: 2,
 
     preferencesOpen: false,
     customizeOpen: false,
@@ -221,6 +222,8 @@ function main() {
       this._colorDir = 1
       this._firstSegment = false
       this._multidrawLastEndpoints = []
+      this._accretionRecentSegments = []
+      this._pendingAccretionSegment = null
       this._internalStabilizer = Number(getSetting('stabilizer') ?? DEFAULTS.stabilizer)
       this._LinePreviewVisible = false
       this._LinePreview = null
@@ -403,6 +406,68 @@ function main() {
       }
     }
 
+    _rememberAccretionSegment(L, generatedLines = null) {
+      const ignoreCount = Math.max(0, parseInt(getSetting('accretionIgnoreSegments') ?? 2, 10) || 0)
+      if (ignoreCount <= 0 || !L) return
+      if (!Array.isArray(this._accretionRecentSegments)) this._accretionRecentSegments = []
+
+      const sourceWidth = Math.max(0.01, Number(L.width) || 0.01)
+      const sourcePad = Math.max(
+        sourceWidth,
+        Number(getSetting('lineWidth') ?? DEFAULTS.lineWidth) * sourceWidth,
+        Number(getSetting('brushSpread') ?? DEFAULTS.brushSpread) * sourceWidth
+      )
+
+      const geometry = Array.isArray(generatedLines) && generatedLines.length
+        ? generatedLines
+        : (Array.isArray(L._accretionCopies) && L._accretionCopies.length
+            ? L._accretionCopies
+            : [L])
+
+      const group = geometry
+        .filter(C => C && [C.x1, C.y1, C.x2, C.y2].every(Number.isFinite))
+        .map(C => {
+          const pieceWidth = Math.max(0.01, Number(C.width) || sourceWidth)
+          const pad = Math.max(
+            pieceWidth,
+            Number(getSetting('lineWidth') ?? DEFAULTS.lineWidth) * pieceWidth,
+            Number(getSetting('brushSpread') ?? DEFAULTS.brushSpread) * pieceWidth,
+            sourcePad
+          )
+          return { x1: C.x1, y1: C.y1, x2: C.x2, y2: C.y2, pad }
+        })
+
+      if (!group.length) return
+
+      this._accretionRecentSegments.push(group)
+      while (this._accretionRecentSegments.length > ignoreCount) this._accretionRecentSegments.shift()
+    }
+
+    _isRecentAccretionLine(L) {
+      if (!Array.isArray(this._accretionRecentSegments) || !this._accretionRecentSegments.length || !L) return false
+      const x1 = L && L.p1 ? L.p1.x : L.x1
+      const y1 = L && L.p1 ? L.p1.y : L.y1
+      const x2 = L && L.p2 ? L.p2.x : L.x2
+      const y2 = L && L.p2 ? L.p2.y : L.y2
+      if (![x1, y1, x2, y2].every(Number.isFinite)) return false
+
+      const mx = (x1 + x2) * 0.5
+      const my = (y1 + y2) * 0.5
+      for (const group of this._accretionRecentSegments) {
+        for (const R of group) {
+          const vx = R.x2 - R.x1
+          const vy = R.y2 - R.y1
+          const len2 = vx * vx + vy * vy
+          let t = len2 > 1e-12 ? ((mx - R.x1) * vx + (my - R.y1) * vy) / len2 : 0
+          t = Math.max(0, Math.min(1, t))
+          const qx = R.x1 + vx * t
+          const qy = R.y1 + vy * t
+          if (Math.hypot(mx - qx, my - qy) <= R.pad) return true
+        }
+      }
+      return false
+    }
+
     _chooseLayerByAccretion(folderLayerIds, x1, y1, x2, y2, width) {
       try {
         if (!Array.isArray(folderLayerIds) || folderLayerIds.length === 0) return null;
@@ -422,7 +487,8 @@ function main() {
 
         const engine = state.simulator.engine;
 
-        const nearby = engine.selectLinesInRadius({ x: midX, y: midY }, width) || [];
+        const nearbyRaw = engine.selectLinesInRadius({ x: midX, y: midY }, width) || [];
+        const nearby = nearbyRaw.filter(L => !this._isRecentAccretionLine(L));
 
         const present = new Array(folderLayerIds.length).fill(false);
         for (const L of nearby) {
@@ -469,12 +535,12 @@ function main() {
       }
     }
 
-    _generateCrayonDots(x1, y1, x2, y2, dotsCount, dotWBase, spread, thicknessVariation, mult, type, flipped, multicolored, folderLayerIds, multicolorMode, randomColor, boomerang, pressureVal, dotLengthMul, midBias) {
+    _generateCrayonDots(x1, y1, x2, y2, dotsCount, dotWBase, spread, thicknessVariation, mult, type, flipped, multicolored, folderLayerIds, multicolorMode, randomColor, boomerang, pressureVal, dotLengthMul, midBias, fixedLayer = null) {
       const out = []
       const dxL = x2 - x1
       const dyL = y2 - y1
       let perCallLayer = null
-      if (multicolored && multicolorMode !== "random" && multicolorMode !== "penPressure") {
+      if (fixedLayer == null && multicolored && multicolorMode !== "random" && multicolorMode !== "penPressure") {
         perCallLayer = this._pickLayerIdForSequence(folderLayerIds, randomColor, boomerang, multicolorMode, pressureVal)
       }
       for (let i = 0; i < dotsCount; i++) {
@@ -496,7 +562,9 @@ function main() {
 
         if (multicolored) {
           let lid = null;
-          if (multicolorMode === "accretion") {
+          if (fixedLayer != null) {
+            lid = fixedLayer
+          } else if (multicolorMode === "accretion") {
             lid = this._chooseLayerByAccretion(folderLayerIds, sx, sy, ex, ey, dotW);
           } else {
             lid = this._chooseLayer(folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal, perCallLayer);
@@ -547,6 +615,9 @@ function main() {
 
         if (accAssigned != null) {
           assignedLayer = accAssigned
+        } else if (multicolorMode === "accretion") {
+          assignedLayer = folderLayerIds[0] ?? getActiveLayer().activeLayerId
+          try { this._lastGeneratedFolderIdx = 0 } catch (e) {}
         } else {
           const perCallLayer = (multicolorMode !== "random" && multicolorMode !== "penPressure") ? this._pickLayerIdForSequence(folderLayerIds, randomColor, boomerang, multicolorMode, pressureVal) : null
           assignedLayer = this._chooseLayer(folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal, perCallLayer)
@@ -626,6 +697,7 @@ function main() {
       this._lastTrueEndpoint = null
       this._currentPos = null
       this._multidrawLastEndpoints = []
+      this._accretionRecentSegments = []
       this._flipThisStroke = false
       this._shiftDown = false
 
@@ -642,7 +714,13 @@ function main() {
       const multidrawEnabled = !!getSetting('multidraw')
       if (!multidrawEnabled) {
         this._normalizeLines(lines)
-        dispatchSetLines(lines)
+        if (Array.isArray(lines) && lines.length) {
+          dispatchSetLines(lines)
+          if (this._pendingAccretionSegment) {
+            this._rememberAccretionSegment(this._pendingAccretionSegment, lines)
+            this._pendingAccretionSegment = null
+          }
+        }
         return
       }
       const count = Math.max(1, parseInt(getSetting('multidrawCount') || 1, 10))
@@ -728,23 +806,21 @@ function main() {
           const sPar = parBase * (usePenPressure ? (typeof pressureStart === 'number' ? pressureStart : 1) : 1)
           const ePar = parBase * (usePenPressure ? (typeof pressureEnd === 'number' ? pressureEnd : 1) : 1)
           let startX, startY
-          if (this._multidrawLastEndpoints && typeof this._multidrawLastEndpoints[i] === 'object' && this._multidrawLastEndpoints[i] !== null) {
+          if (!getSetting('xy') && this._multidrawLastEndpoints && typeof this._multidrawLastEndpoints[i] === 'object' && this._multidrawLastEndpoints[i] !== null) {
             startX = this._multidrawLastEndpoints[i].x
             startY = this._multidrawLastEndpoints[i].y
-          } else {
-            if (ignoreRotation) {
+          } else if (ignoreRotation) {
             startX = baseSX + sOff
             startY = baseSY + sPar
-            } else {
+          } else {
             startX = baseSX + px * sOff + ux * sPar
             startY = baseSY + py * sOff + uy * sPar
-            }
           }
-          const endX = (ignoreRotation ? baseFX + eOff : baseFX + px * eOff + ux * ePar)
-          const endY = (ignoreRotation ? baseFY + ePar : baseFY + py * eOff + uy * ePar)
+          const endX = ignoreRotation ? baseFX + eOff : baseFX + px * eOff + ux * ePar
+          const endY = ignoreRotation ? baseFY + ePar : baseFY + py * eOff + uy * ePar
           const layerFor = (typeof mLayers[i] !== 'undefined' && mLayers[i] !== null) ? mLayers[i] : L.layer
           if (L._canonical) {
-            if (getSetting('xy')) {
+            if (L._xyCanonical) {
               const midX = endX
               const midY = startY
               const segs = [
@@ -768,8 +844,9 @@ function main() {
                     seg.pEnd,
                     Number(getSetting('dotLength') ?? DEFAULTS.dotLength),
                     Number(getSetting('midBias') ?? DEFAULTS.midBias),
+                    multicolorModeGlobal === 'accretion' ? null : layerFor,
                   )
-                  if (layerFor != null) for (const p of pieces) p.layer = layerFor
+                  if (layerFor != null && multicolorModeGlobal !== 'accretion') for (const p of pieces) p.layer = layerFor
                   out.push(...pieces)
                   this._multidrawLastEndpoints[i] = { x: seg.fx, y: seg.fy }
                 } else if (paintBrushModeGlobal) {
@@ -781,9 +858,10 @@ function main() {
                     Number(getSetting("bristleThickness") ?? DEFAULTS.bristleThickness) * L.width,
                     L.multiplier, L.type, L.flipped,
                     folderLayerIdsGlobal, multicoloredGlobal, multicolorModeGlobal, randomColorGlobal, boomerangGlobal,
-                    seg.pEnd
+                    seg.pEnd,
+                    multicolorModeGlobal === 'accretion' ? null : layerFor,
                   )
-                  if (layerFor != null) for (const p of pieces) p.layer = layerFor
+                  if (layerFor != null && multicolorModeGlobal !== 'accretion') for (const p of pieces) p.layer = layerFor
                   out.push(...pieces)
                   this._multidrawLastEndpoints[i] = { x: seg.fx, y: seg.fy }
                 } else {
@@ -812,8 +890,9 @@ function main() {
                   pressureEnd,
                   Number(getSetting('dotLength') ?? DEFAULTS.dotLength),
                   Number(getSetting('midBias') ?? DEFAULTS.midBias),
+                  multicolorModeGlobal === 'accretion' ? null : layerFor,
                 )
-                if (layerFor != null) for (const p of pieces) p.layer = layerFor
+                if (layerFor != null && multicolorModeGlobal !== 'accretion') for (const p of pieces) p.layer = layerFor
                 out.push(...pieces)
                 this._multidrawLastEndpoints[i] = { x: endX, y: endY }
               } else if (paintBrushModeGlobal) {
@@ -825,9 +904,10 @@ function main() {
                   Number(getSetting("bristleThickness") ?? DEFAULTS.bristleThickness) * L.width,
                   L.multiplier, L.type, L.flipped,
                   folderLayerIdsGlobal, multicoloredGlobal, multicolorModeGlobal, randomColorGlobal, boomerangGlobal,
-                  pressureEnd
+                  pressureEnd,
+                  multicolorModeGlobal === 'accretion' ? null : layerFor,
                 )
-                if (layerFor != null) for (const p of pieces) p.layer = layerFor
+                if (layerFor != null && multicolorModeGlobal !== 'accretion') for (const p of pieces) p.layer = layerFor
                 out.push(...pieces)
                 this._multidrawLastEndpoints[i] = { x: endX, y: endY }
               } else {
@@ -854,6 +934,10 @@ function main() {
       }
       if (out.length) {
         dispatchSetLines(out)
+        if (this._pendingAccretionSegment) {
+          this._rememberAccretionSegment(this._pendingAccretionSegment, out)
+          this._pendingAccretionSegment = null
+        }
         try {
           const canonicalCount = Array.isArray(lines) ? lines.reduce((acc, L) => acc + (L && L._canonical ? 1 : 0), 0) : 0;
           if (useEquationOffsets) {
@@ -863,12 +947,12 @@ function main() {
       }
     }
 
-    _generateBrushStrokes(x1, y1, x2, y2, count, spread, thicknessJitter, bristleThickness, mult, type, flipped, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal) {
+    _generateBrushStrokes(x1, y1, x2, y2, count, spread, thicknessJitter, bristleThickness, mult, type, flipped, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureVal, fixedLayer = null) {
       const out = []
       const dx = x2 - x1
       const dy = y2 - y1
       let perCallLayer = null
-      if (multicolored && multicolorMode !== "random" && multicolorMode !== "penPressure") {
+      if (fixedLayer == null && multicolored && multicolorMode !== "random" && multicolorMode !== "penPressure") {
         perCallLayer = this._pickLayerIdForSequence(folderLayerIds, randomColor, boomerang, multicolorMode, pressureVal)
       }
       for (let i = 0; i < count; i++) {
@@ -1061,22 +1145,29 @@ function main() {
       }
 
       if (multidrawEnabled) {
-        const canonical = segments.map(seg => {
-          const L = this._makeLineObjLiteral(seg.sx, seg.sy, seg.fx, seg.fy, effectiveWidthVal, multVal, type, !!this._flipThisStroke, null, folderLayerIds, multicolored, multicolorMode, randomColor, boomerang, pressureEnd)
-          L._canonical = true
-          L._trueStartX = seg.trueStartX; L._trueStartY = seg.trueStartY
-          L._trueEndX = seg.trueEndX; L._trueEndY = seg.trueEndY
-          return L
-        })
-        if (safeDispatchAddNoCommit(canonical)) {
+        const canonicalLine = this._makeLineObjLiteral(
+          sx, sy, fx, fy,
+          effectiveWidthVal, multVal, type, !!this._flipThisStroke, null,
+          folderLayerIds, multicolored, multicolorMode,
+          randomColor, boomerang, pressureEnd
+        )
+        canonicalLine._canonical = true
+        canonicalLine._xyCanonical = !!xyMode
+        canonicalLine._trueStartX = sx; canonicalLine._trueStartY = sy
+        canonicalLine._trueEndX = fx; canonicalLine._trueEndY = fy
+
+        this._pendingAccretionSegment = {
+          _trueStartX: sx, _trueStartY: sy, _trueEndX: fx, _trueEndY: fy,
+          x1: sx, y1: sy, x2: fx, y2: fy,
+          width: effectiveWidthVal
+        }
+
+        if (safeDispatchAddNoCommit([canonicalLine])) {
           this._resetInternalStabilizer()
           this._clearLinePreview()
           this._pressureAtLastPoint = this._currentPressure
-          const lastSeg = canonical[canonical.length - 1]
-          const endX = (typeof lastSeg._trueEndX === 'number') ? lastSeg._trueEndX : lastSeg.x2
-          const endY = (typeof lastSeg._trueEndY === 'number') ? lastSeg._trueEndY : lastSeg.y2
-          this._lastPoint = new V2({ x: endX, y: endY })
-          this._lastTrueEndpoint = new V2({ x: endX, y: endY })
+          this._lastPoint = new V2({ x: fx, y: fy })
+          this._lastTrueEndpoint = new V2({ x: fx, y: fy })
           if (this._firstSegment) this._firstSegment = false
         }
         return
@@ -1136,6 +1227,11 @@ function main() {
       }
 
       if (out.length === 0) return
+      this._pendingAccretionSegment = {
+        _trueStartX: sx, _trueStartY: sy, _trueEndX: fx, _trueEndY: fy,
+        x1: sx, y1: sy, x2: fx, y2: fy,
+        width: effectiveWidthVal
+      }
       if (!safeDispatchAddNoCommit(out)) return
       this._resetInternalStabilizer()
       this._clearLinePreview()
@@ -1160,35 +1256,24 @@ function main() {
       const xyMode = !!getSetting('xy')
       const crayonMode = !!(params && params.crayonMode)
       const paintBrushMode = !!(params && params.paintBrushMode)
-
-      if (crayonMode || paintBrushMode) {
-        const pieces = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastP)
-        if (pieces && pieces.length) {
-          this._dispatchLines(pieces, this._pressureAtLastPoint, lastP)
-        }
-        this._pressureAtLastPoint = lastP
-        this._lastPoint = new V2({ x: fx, y: fy })
-        this._lastTrueEndpoint = new V2({ x: fx, y: fy })
-        return
+      this._pendingAccretionSegment = {
+        _trueStartX: sx, _trueStartY: sy, _trueEndX: fx, _trueEndY: fy,
+        x1: sx, y1: sy, x2: fx, y2: fy,
+        width: params && typeof params.effectiveWidthVal === 'number' ? params.effectiveWidthVal : 1
       }
 
       if (multidrawEnabled) {
-        if (xyMode) {
-          const midX = fx
-          const midY = sy
-          const L1 = this._makeLineObjLiteral(sx, sy, midX, midY, params.effectiveWidthVal, params.multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, params.folderLayerIds, params.multicolored, params.multicolorMode, params.randomColor, params.boomerang, params.pressureForLayer)
-          L1._canonical = true
-          L1._trueStartX = sx; L1._trueStartY = sy; L1._trueEndX = midX; L1._trueEndY = midY
-          const L2 = this._makeLineObjLiteral(midX, midY, fx, fy, params.effectiveWidthVal, params.multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, params.folderLayerIds, params.multicolored, params.multicolorMode, params.randomColor, params.boomerang, params.pressureForLayer)
-          L2._canonical = true
-          L2._trueStartX = midX; L2._trueStartY = midY; L2._trueEndX = fx; L2._trueEndY = fy
-          this._dispatchLines([L1, L2], this._pressureAtLastPoint, lastP)
-        } else {
-          const L = this._makeLineObjLiteral(sx, sy, fx, fy, params.effectiveWidthVal, params.multVal, getSelectedLineType(this.getState()), !!this._flipThisStroke, null, params.folderLayerIds, params.multicolored, params.multicolorMode, params.randomColor, params.boomerang, params.pressureForLayer)
-          L._canonical = true
-          L._trueStartX = sx; L._trueStartY = sy; L._trueEndX = fx; L._trueEndY = fy
-          this._dispatchLines([L], this._pressureAtLastPoint, lastP)
-        }
+        const L = this._makeLineObjLiteral(
+          sx, sy, fx, fy, params.effectiveWidthVal, params.multVal,
+          getSelectedLineType(this.getState()), !!this._flipThisStroke, null,
+          params.folderLayerIds, params.multicolored, params.multicolorMode,
+          params.randomColor, params.boomerang, params.pressureForLayer
+        )
+        L._canonical = true
+        L._xyCanonical = !!xyMode
+        L._trueStartX = sx; L._trueStartY = sy
+        L._trueEndX = fx; L._trueEndY = fy
+        this._dispatchLines([L], this._pressureAtLastPoint, lastP)
         this._pressureAtLastPoint = lastP
         this._lastPoint = new V2({ x: fx, y: fy })
         this._lastTrueEndpoint = new V2({ x: fx, y: fy })
@@ -1213,8 +1298,13 @@ function main() {
         return
       }
 
-      const out = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastP)
-      if (out.length) this._dispatchLines(out, this._pressureAtLastPoint, lastP)
+      if (crayonMode || paintBrushMode) {
+        const pieces = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastP)
+        if (pieces && pieces.length) this._dispatchLines(pieces, this._pressureAtLastPoint, lastP)
+      } else {
+        const out = this._segmentPieces(sx, sy, fx, fy, params.pressureForLayer, lastP)
+        if (out.length) this._dispatchLines(out, this._pressureAtLastPoint, lastP)
+      }
       this._pressureAtLastPoint = lastP
       this._lastPoint = new V2({ x: fx, y: fy })
       this._lastTrueEndpoint = new V2({ x: fx, y: fy })
@@ -1778,11 +1868,13 @@ function main() {
             this.renderRadio("multicolorMode", "boomerang", "Boomerang"),
             this.renderRadio("multicolorMode", "random", "Random Color"),
             this.renderRadio("multicolorMode", "accretion", "Accretion"),
+            this.state.multicolorMode === "accretion" ? this.renderSlider("accretionIgnoreSegments", { min: 0, max: 20, step: 1 }, "Ignore Recent Segments") : null,
             this.renderRadio("multicolorMode", "penPressure", "Pen Pressure")
           ]) : null,
           this.renderCheckbox("multidraw", "Multidraw"),
           this.state.multidraw ? e("div", { style: this.sectionBox }, [
             this.renderSlider("multidrawCount", { min: 1, max: 8, step: 1 }, "Lines to draw"),
+            this.renderCheckbox("ignoreRotation", "Ignore Rotation"),
             this.renderCheckbox("equationOffsets", "Equation Offsets"),
             this.state.equationOffsets ? this.renderCheckbox("multidrawParallel", "Parallel Offsets") : null,
             e("div", { style: { marginTop: "6px" } },
@@ -1876,7 +1968,6 @@ function main() {
               }
             })
              ),
-            this.renderCheckbox("ignoreRotation", "Ignore Rotation"),
             this.renderCheckbox("multidrawPenPressure", "Pen Pressure (multidraw)")
           ]) : null,
           this.renderCheckbox("penPressure", "Pen Pressure"),
