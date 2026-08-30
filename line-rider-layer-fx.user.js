@@ -3,7 +3,7 @@
 // @namespace    https://linerider.com/
 // @author       xavi
 // @description  layer opacity, blur, blend modes, gradients, and keyframes that save to track file (but you can't have more than like 8 to 16 fx layers or it breaks)
-// @version      1.6.7
+// @version      1.6.8
 
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -2934,13 +2934,6 @@
             closePopover();
         });
         panel.appendChild(resetBtn);
-
-        var hint = document.createElement('div');
-        hint.style.marginTop = '8px';
-        hint.style.fontSize = '10px';
-        hint.style.color = '#777';
-        hint.textContent = 'Stored inside the track file. Save the track to write FX changes.';
-        panel.appendChild(hint);
 
         document.body.appendChild(panel);
         activePopover = { el: panel, layerId: layerId, anchorBtn: btn };
