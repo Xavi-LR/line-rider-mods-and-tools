@@ -2,8 +2,8 @@
 // @name         Line Rider Layer FX
 // @namespace    https://linerider.com/
 // @author       xavi
-// @description  layer opacity, blur, blend modes, gradients, and keyframes that save to track file (but you can't have more than like 8 to 16 fx layers or it breaks)
-// @version      1.6.8
+// @description  layer opacity, blur, blend modes, gradients, and keyframes that save to track file
+// @version      1.9.0
 
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -21,14 +21,13 @@
 // @grant        none
 // ==/UserScript==
 
-/* eslint-disable no-console */
 (function () {
     'use strict';
 
     var LAYER_TYPE_LAYER = 0;
     var LAYER_TYPE_FOLDER = 1;
-    var TRACK_FX_KEY = 'layerFX';
-    var TRACK_FX_VERSION = 5;
+    var TRACK_FX_KEY = 'lrLayerFX';
+    var TRACK_FX_VERSION = 6;
 
     var GRADIENT_EDITOR_Z = 1000001;
     var UI_SCAN_INTERVAL_MS = 500;
@@ -176,8 +175,21 @@
 
     var settings = new Map();
 
+    var GRADIENT_MODES = [
+        { value: 'linear', label: 'Linear' },
+        { value: 'radial', label: 'Radial' },
+        { value: 'freeform', label: 'Freeform' },
+        { value: 'barycentric', label: 'Barycentric (only works with 3 points)' }
+    ];
+
+    function normalizeGradientMode(mode) {
+
+        if (mode === 'idw') mode = 'freeform';
+        return GRADIENT_MODES.some(function (m) { return m.value === mode; }) ? mode : 'linear';
+    }
+
     function defaultSetting() {
-        return { opacity: 1, blur: 0, blend: 'normal', front: false, gradient: null, keyframes: [] };
+        return { opacity: 1, blur: 0, blend: 'normal', front: false, gradient: null, gradientMode: 'linear', keyframes: [] };
     }
 
     function normalizeHexColor(color) {
@@ -231,6 +243,7 @@
             blend: typeof s.blend === 'string' ? s.blend : 'normal',
             front: !!s.front,
             gradient: normalizeGradient(s.gradient),
+            gradientMode: normalizeGradientMode(s.gradientMode),
             keyframes: normalizeKeyframes(s.keyframes)
         };
     }
@@ -250,7 +263,7 @@
                     return Math.max(0, Math.floor(index));
                 }
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return getCurrentFrame();
     }
 
@@ -258,7 +271,7 @@
         try {
             if (rig && rig.lastCamera && Number.isFinite(Number(rig.lastCamera.zoom)) && Number(rig.lastCamera.zoom) > 0) return Number(rig.lastCamera.zoom);
             if (inst && inst.props && inst.props.camera && Number.isFinite(Number(inst.props.camera.zoom)) && Number(inst.props.camera.zoom) > 0) return Number(inst.props.camera.zoom);
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return 1;
     }
 
@@ -271,6 +284,7 @@
             blend: typeof s.blend === 'string' ? s.blend : 'normal',
             front: !!s.front,
             gradient: normalizeGradient(s.gradient),
+            gradientMode: normalizeGradientMode(s.gradientMode),
             keyframes: normalizeKeyframes(s.keyframes)
         };
     }
@@ -281,7 +295,7 @@
         return (!('opacity' in s) || s.opacity >= 1) &&
             (!('blur' in s) || !Number(s.blur)) &&
             (!('blend' in s) || s.blend === 'normal' || !s.blend) &&
-            !s.front && !gradient && normalizeKeyframes(s.keyframes).length === 0;
+            !s.front && !gradient && normalizeGradientMode(s.gradientMode) === 'linear' && normalizeKeyframes(s.keyframes).length === 0;
     }
 
     function settingsEqual(a, b) {
@@ -293,10 +307,12 @@
             opacity: Math.max(0, Math.min(1, typeof s.opacity === 'number' ? s.opacity : 1)),
             blur: Math.max(0, Math.min(MAX_BLUR_PX, Number.isFinite(Number(s.blur)) ? Number(s.blur) : 0)),
             blend: typeof s.blend === 'string' ? s.blend : 'normal',
-            front: !!s.front
+            front: !!s.front,
+            gradientMode: normalizeGradientMode(s.gradientMode)
         };
         var gradient = normalizeGradient(s.gradient);
         if (gradient) {
+            out.gradientMode = normalizeGradientMode(s.gradientMode);
             out.gradient = { stops: gradient.stops.map(function (stop) {
                 return { x: stop.x, y: stop.y, color: stop.color };
             }) };
@@ -454,7 +470,7 @@
             } else {
                 delete layer[TRACK_FX_KEY];
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
     }
 
     function setSetting(layerId, patch, options) {
@@ -492,6 +508,7 @@
         next.blend=typeof next.blend==='string'?next.blend:'normal';
         next.front=!!next.front;
         next.gradient=normalizeGradient(next.gradient);
+        next.gradientMode=normalizeGradientMode(next.gradientMode);
         next.keyframes=normalizeKeyframes(next.keyframes);
         if (isDefaultSetting(next)) settings.delete(layerId); else settings.set(layerId,next);
         syncLayerFXProperty(layerId);
@@ -582,6 +599,7 @@
             blend: typeof raw.blend === 'string' ? raw.blend : 'normal',
             front: !!raw.front,
             gradient: normalizeGradient(raw.gradient),
+            gradientMode: normalizeGradientMode(raw.gradientMode),
             keyframes: normalizeKeyframes(raw.keyframes)
         };
         return isDefaultSetting(setting) ? null : setting;
@@ -615,7 +633,7 @@
                 var setting = normalizeTrackFXSetting(raw);
                 if (setting) map.set(Number(layer.id), setting);
             });
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return map;
     }
 
@@ -651,7 +669,7 @@
                 }
             });
             if (changed) markTrackDirtyForFX();
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         cleanupOrphanedCanvases();
     }
 
@@ -784,7 +802,7 @@
                     return node.stateNode;
                 }
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return null;
     }
 
@@ -831,6 +849,14 @@
                 secondaryLayerCaptureImageData: null,
                 secondaryLayerCaptureW: 0,
                 secondaryLayerCaptureH: 0,
+
+                layerCaptureCanvas: null,
+                layerCaptureGl: null,
+                layerCaptureRenderer: null,
+                layerCapturePixels: null,
+                layerCaptureImageData: null,
+                layerCaptureW: 0,
+                layerCaptureH: 0,
                 _secondaryLastCompositeSerial: -1,
                 _secondaryRenderSerial: 0,
                 _secondaryFrameInitialized: false,
@@ -861,17 +887,11 @@
     function disposeRig(rig) {
         try {
             rig.layerCanvases.forEach(function (entry) {
-                if (rig.isSecondary) {
+                if (entry) {
                     clear2DCanvas(entry.captureCanvas);
                     clear2DCanvas(entry.displayCanvas);
-                    if (entry.displayCanvas && entry.displayCanvas.parentNode) {
-                        entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
-                    }
-                } else {
-                    disposeGlEntry(entry);
-                    if (entry.displayCanvas && entry.displayCanvas !== entry.canvas && entry.displayCanvas.parentNode) {
-                        entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
-                    }
+                    if (entry.captureCanvas && entry.captureCanvas.parentNode) entry.captureCanvas.parentNode.removeChild(entry.captureCanvas);
+                    if (entry.displayCanvas && entry.displayCanvas.parentNode) entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
                 }
             });
             rig.layerCanvases.clear();
@@ -898,20 +918,8 @@
             }
             rig.secondaryCompositeCanvas = null;
             rig.secondaryCompositeCtx = null;
-            if (rig.secondaryLayerCaptureCanvas) {
-                try {
-                    var ext = rig.secondaryLayerCaptureGl && rig.secondaryLayerCaptureGl.getExtension('WEBGL_lose_context');
-                    if (ext) ext.loseContext();
-                } catch (e) { /* ignore */ }
-            }
-            rig.secondaryLayerCaptureCanvas = null;
-            rig.secondaryLayerCaptureGl = null;
-            rig.secondaryLayerCaptureRenderer = null;
-            rig.secondaryLayerCapturePixels = null;
-            rig.secondaryLayerCaptureImageData = null;
-            rig.secondaryLayerCaptureW = 0;
-            rig.secondaryLayerCaptureH = 0;
-        } catch (e) { /* ignore */ }
+            disposeSharedCaptureOnly(rig);
+        } catch (e) {}
     }
 
     function disposeGlEntry(entry) {
@@ -921,7 +929,7 @@
                 var ext = entry.gl.getExtension('WEBGL_lose_context');
                 if (ext) ext.loseContext();
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
     }
 
     function patchGlForCorrectAlpha(gl) {
@@ -992,44 +1000,55 @@
         return entry;
     }
 
-    function ensureSecondaryLayerCaptureRig(inst, rig) {
-        if (!rig.isSecondary) return null;
+    function ensureSharedLayerCaptureRig(inst, rig) {
         var host = inst && inst.canvas;
         if (!host) return null;
         var RendererClass = getWebGLRendererClass(inst);
         if (!RendererClass) return null;
 
-        if (!rig.secondaryLayerCaptureCanvas) {
+        if (!rig.layerCaptureCanvas) {
             var made = makeTransparentGlCanvas();
             if (!made.gl) {
-                warn('could not create shared secondary layer capture WebGL context');
+                warn('could not create shared layer capture WebGL context');
                 return null;
             }
-            made.canvas.style.display = 'none';
+            made.canvas.style.display = 'block';
+            made.canvas.style.visibility = 'hidden';
+            made.canvas.style.width = '1px';
+            made.canvas.style.height = '1px';
+            made.canvas.style.position = 'absolute';
+            made.canvas.style.left = '-10000px';
+            made.canvas.style.top = '-10000px';
+            made.canvas.style.pointerEvents = 'none';
+            made.canvas.dataset.lrmodSharedLayerCapture = '1';
             try {
-                rig.secondaryLayerCaptureRenderer = new RendererClass(made.canvas, made.gl);
+                rig.layerCaptureRenderer = new RendererClass(made.canvas, made.gl);
             } catch (e) {
-                err('failed to construct shared secondary layer capture renderer', e);
+                err('failed to construct shared layer capture renderer', e);
                 try {
                     var ext = made.gl.getExtension('WEBGL_lose_context');
                     if (ext) ext.loseContext();
-                } catch (e2) { /* ignore */ }
+                } catch (e2) {}
                 return null;
             }
-            rig.secondaryLayerCaptureCanvas = made.canvas;
-            rig.secondaryLayerCaptureGl = made.gl;
+            rig.layerCaptureCanvas = made.canvas;
+            rig.layerCaptureGl = made.gl;
         }
 
         var w = host.width || 2, h = host.height || 2;
-        if (rig.secondaryLayerCaptureCanvas.width !== w) rig.secondaryLayerCaptureCanvas.width = w;
-        if (rig.secondaryLayerCaptureCanvas.height !== h) rig.secondaryLayerCaptureCanvas.height = h;
-        if (rig.secondaryLayerCaptureW !== w || rig.secondaryLayerCaptureH !== h || !rig.secondaryLayerCapturePixels) {
-            rig.secondaryLayerCapturePixels = new Uint8Array(w * h * 4);
-            rig.secondaryLayerCaptureW = w;
-            rig.secondaryLayerCaptureH = h;
-            rig.secondaryLayerCaptureImageData = null;
+        if (rig.layerCaptureCanvas.width !== w) rig.layerCaptureCanvas.width = w;
+        if (rig.layerCaptureCanvas.height !== h) rig.layerCaptureCanvas.height = h;
+        if (rig.layerCaptureW !== w || rig.layerCaptureH !== h || !rig.layerCapturePixels) {
+            rig.layerCapturePixels = new Uint8Array(w * h * 4);
+            rig.layerCaptureW = w;
+            rig.layerCaptureH = h;
+            rig.layerCaptureImageData = null;
         }
-        return rig.secondaryLayerCaptureCanvas;
+        return rig.layerCaptureCanvas;
+    }
+
+    function ensureSecondaryLayerCaptureRig(inst, rig) {
+        return ensureSharedLayerCaptureRig(inst, rig);
     }
 
     function getOrCreateSecondaryLayerEntry(inst, rig, layerId) {
@@ -1042,10 +1061,9 @@
         c.dataset.lrmodLayerCapture = String(layerId);
         c.style.display = 'none';
         entry = {
-
-            canvas: rig.secondaryLayerCaptureCanvas,
-            gl: rig.secondaryLayerCaptureGl,
-            renderer: rig.secondaryLayerCaptureRenderer,
+            canvas: rig.layerCaptureCanvas,
+            gl: rig.layerCaptureGl,
+            renderer: rig.layerCaptureRenderer,
             captureCanvas: c,
             captureCtx: c.getContext('2d'),
             displayCanvas: null,
@@ -1056,10 +1074,39 @@
         return entry;
     }
 
+    function getOrCreatePrimaryLayerEntry(inst, rig, layerId) {
+        var entry = rig.layerCanvases.get(layerId);
+        if (entry) return entry;
+        if (!ensureSharedLayerCaptureRig(inst, rig)) return null;
+
+        var c = document.createElement('canvas');
+        c.className = 'lrmod-layer-fx-display';
+        c.style.position = 'absolute';
+        c.style.top = '0';
+        c.style.left = '0';
+        c.style.width = '100%';
+        c.style.height = '100%';
+        c.style.pointerEvents = 'none';
+        c.dataset.lrmodLayerCapture = String(layerId);
+        var ctx = c.getContext('2d');
+        entry = {
+            canvas: rig.layerCaptureCanvas,
+            gl: rig.layerCaptureGl,
+            renderer: rig.layerCaptureRenderer,
+            captureCanvas: c,
+            captureCtx: ctx,
+            displayCanvas: c,
+            displayCtx: ctx,
+            secondaryCaptureSerial: -1
+        };
+        rig.layerCanvases.set(layerId, entry);
+        return entry;
+    }
+
     function getOrCreateLayerEntry(inst, rig, layerId) {
         return rig.isSecondary
             ? getOrCreateSecondaryLayerEntry(inst, rig, layerId)
-            : getOrCreateNamedEntry(inst, rig.layerCanvases, layerId, 'layer-' + layerId);
+            : getOrCreatePrimaryLayerEntry(inst, rig, layerId);
     }
 
     function getOrCreateToolEntry(inst, rig, field) {
@@ -1098,29 +1145,58 @@
         drawFn();
     }
 
-    function captureSecondaryLayerTo2D(inst, rig, entry, scene, camera, opts) {
-        var sharedCanvas = rig.secondaryLayerCaptureCanvas;
-        var gl = rig.secondaryLayerCaptureGl;
-        var renderer = rig.secondaryLayerCaptureRenderer;
-        var target = entry.captureCanvas;
-        var ctx = entry.captureCtx;
-        if (!sharedCanvas || !gl || !renderer || !target || !ctx) return false;
-
+    function captureLayerTo2D(inst, rig, entry, layerId, scene, camera, opts) {
+        var sharedCanvas = rig.layerCaptureCanvas;
+        var gl = rig.layerCaptureGl;
+        var renderer = rig.layerCaptureRenderer;
+        if (!sharedCanvas || !gl || !renderer) return false;
         syncCanvasSize(sharedCanvas, inst.canvas);
-        syncCanvasSize(target, inst.canvas);
         var w = sharedCanvas.width, h = sharedCanvas.height;
         gl.viewport(0, 0, w, h);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
         renderer.render(scene, camera, Object.assign({}, opts || {}, { transparent: true }));
 
-        if (!rig.secondaryLayerCapturePixels || rig.secondaryLayerCapturePixels.length !== w * h * 4) {
-            rig.secondaryLayerCapturePixels = new Uint8Array(w * h * 4);
+        var effective = getEffectiveSetting(layerId, getFrameForInstance(inst, rig));
+        var gradient = normalizeGradient(effective.gradient);
+        if (gradient && gradient.stops.length) {
+            apply2DPointGradientToSharedCapture(gl, sharedCanvas, gradient, camera, opts, effective.gradientMode);
         }
-        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rig.secondaryLayerCapturePixels);
 
+        entry.secondaryCaptureSerial = rig._secondaryRenderSerial;
+
+        if (!rig.isSecondary) {
+            var targetPrimary = entry.captureCanvas;
+            var ctxPrimary = entry.captureCtx;
+            if (!targetPrimary || !ctxPrimary) return false;
+            syncCanvasSize(targetPrimary, inst.canvas);
+            try { gl.flush(); } catch (e) {}
+            ctxPrimary.setTransform(1, 0, 0, 1, 0, 0);
+            ctxPrimary.globalCompositeOperation = 'source-over';
+            ctxPrimary.globalAlpha = 1;
+            ctxPrimary.filter = 'none';
+            ctxPrimary.clearRect(0, 0, targetPrimary.width, targetPrimary.height);
+            ctxPrimary.drawImage(sharedCanvas, 0, 0, targetPrimary.width, targetPrimary.height);
+            var solidColorPrimary = (!gradient && effective.color) ? normalizeHexColor(effective.color) : null;
+            if (solidColorPrimary) {
+                ctxPrimary.globalCompositeOperation = 'source-in';
+                ctxPrimary.fillStyle = solidColorPrimary;
+                ctxPrimary.fillRect(0, 0, targetPrimary.width, targetPrimary.height);
+                ctxPrimary.globalCompositeOperation = 'source-over';
+            }
+            return true;
+        }
+
+        var target = entry.captureCanvas;
+        var ctx = entry.captureCtx;
+        if (!target || !ctx) return false;
+        syncCanvasSize(target, inst.canvas);
+        if (!rig.layerCapturePixels || rig.layerCapturePixels.length !== w * h * 4) {
+            rig.layerCapturePixels = new Uint8Array(w * h * 4);
+        }
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, rig.layerCapturePixels);
         var imageData = ctx.createImageData(w, h);
-        var src = rig.secondaryLayerCapturePixels;
+        var src = rig.layerCapturePixels;
         var dst = imageData.data;
         var rowBytes = w * 4;
         for (var y = 0; y < h; y++) {
@@ -1128,7 +1204,6 @@
             dst.set(src.subarray(srcOff, srcOff + rowBytes), y * rowBytes);
         }
         ctx.putImageData(imageData, 0, 0);
-        entry.secondaryCaptureSerial = rig._secondaryRenderSerial;
         return true;
     }
 
@@ -1136,7 +1211,7 @@
         try {
             var layers = window.Selectors.getTrackLayers();
             for (var i = 0; i < layers.length; i++) if (layers[i].id === layerId) return layers[i];
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return null;
     }
 
@@ -1159,7 +1234,7 @@
                 var layer = layers[i];
                 if (layer.type === LAYER_TYPE_LAYER && layer.folderId === folderId) children.push(layer);
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return children;
     }
 
@@ -1216,16 +1291,356 @@
         }
     }
 
+    var GRADIENT_MAX_STOPS = 32;
+    var GRADIENT_VERTEX_SRC = [
+        'attribute vec2 aPos;',
+        'varying vec2 vUv;',
+        'void main() {',
+        '    vUv = aPos * 0.5 + 0.5;',
+        '    gl_Position = vec4(aPos, 0.0, 1.0);',
+        '}'
+    ].join('\n');
+    var GRADIENT_FRAGMENT_SRC = [
+        'precision highp float;',
+        'varying vec2 vUv;',
+        'uniform sampler2D uSource;',
+        'uniform int uCount;',
+        'uniform int uMode;',
+        'uniform vec2 uPoints[' + GRADIENT_MAX_STOPS + '];',
+        'uniform float uOffsets[' + GRADIENT_MAX_STOPS + '];',
+        'uniform float uSpreads[' + GRADIENT_MAX_STOPS + '];',
+        'uniform vec2 uLinearA;',
+        'uniform vec2 uLinearB;',
+        'uniform vec2 uRadialCenter;',
+        'uniform vec2 uRadialCenterWorld;',
+        'uniform vec2 uViewportSize;',
+        'uniform vec2 uCameraFocal;',
+        'uniform float uCameraZoom;',
+        'uniform vec3 uColors[' + GRADIENT_MAX_STOPS + '];',
+        '',
+        'vec3 triangleColor() {',
+        '    vec2 p0 = uPoints[0], p1 = uPoints[1], p2 = uPoints[2];',
+        '    float den = (p1.y-p2.y)*(p0.x-p2.x) + (p2.x-p1.x)*(p0.y-p2.y);',
+        '    if (abs(den) < 0.000001) return uColors[0];',
+        '    float w0 = ((p1.y-p2.y)*(vUv.x-p2.x) + (p2.x-p1.x)*(vUv.y-p2.y)) / den;',
+        '    float w1 = ((p2.y-p0.y)*(vUv.x-p2.x) + (p0.x-p2.x)*(vUv.y-p2.y)) / den;',
+        '    float w2 = 1.0 - w0 - w1;',
+        '    return clamp(uColors[0]*w0 + uColors[1]*w1 + uColors[2]*w2, 0.0, 1.0);',
+        '}',
+        'vec3 linearColor() {',
+        '    if (uCount <= 1) return uColors[0];',
+        '    vec2 line = uLinearB - uLinearA;',
+        '    float lineLen2 = max(dot(line, line), 0.000001);',
+        '    float t = clamp(dot(vUv - uLinearA, line) / lineLen2, 0.0, 1.0);',
+        '    for (int i = 0; i < ' + GRADIENT_MAX_STOPS + '; i++) {',
+        '        if (i >= uCount - 1) break;',
+        '        float a = uOffsets[i];',
+        '        float b = uOffsets[i + 1];',
+        '        if (t <= b || i == uCount - 2) {',
+        '            float span = max(b - a, 0.000001);',
+        '            float localT = clamp((t - a) / span, 0.0, 1.0);',
+        '            return mix(uColors[i], uColors[i + 1], localT);',
+        '        }',
+        '    }',
+        '    if (uCount >= 32) return uColors[31];',
+        '    if (uCount == 31) return uColors[30];',
+        '    if (uCount == 30) return uColors[29];',
+        '    if (uCount == 29) return uColors[28];',
+        '    if (uCount == 28) return uColors[27];',
+        '    if (uCount == 27) return uColors[26];',
+        '    if (uCount == 26) return uColors[25];',
+        '    if (uCount == 25) return uColors[24];',
+        '    if (uCount == 24) return uColors[23];',
+        '    if (uCount == 23) return uColors[22];',
+        '    if (uCount == 22) return uColors[21];',
+        '    if (uCount == 21) return uColors[20];',
+        '    if (uCount == 20) return uColors[19];',
+        '    if (uCount == 19) return uColors[18];',
+        '    if (uCount == 18) return uColors[17];',
+        '    if (uCount == 17) return uColors[16];',
+        '    if (uCount == 16) return uColors[15];',
+        '    if (uCount == 15) return uColors[14];',
+        '    if (uCount == 14) return uColors[13];',
+        '    if (uCount == 13) return uColors[12];',
+        '    if (uCount == 12) return uColors[11];',
+        '    if (uCount == 11) return uColors[10];',
+        '    if (uCount == 10) return uColors[9];',
+        '    if (uCount == 9) return uColors[8];',
+        '    if (uCount == 8) return uColors[7];',
+        '    if (uCount == 7) return uColors[6];',
+        '    if (uCount == 6) return uColors[5];',
+        '    if (uCount == 5) return uColors[4];',
+        '    if (uCount == 4) return uColors[3];',
+        '    if (uCount == 3) return uColors[2];',
+        '    if (uCount == 2) return uColors[1];',
+        '    return uColors[0];',
+        '}',
+        'vec3 radialColor() {',
+        '    if (uCount <= 1) return uColors[0];',
+        '    vec2 pixel = vec2(vUv.x * uViewportSize.x, (1.0 - vUv.y) * uViewportSize.y);',
+        '    vec2 world = vec2(',
+        '        (pixel.x - uViewportSize.x * 0.5) / max(uCameraZoom, 0.000001) + uCameraFocal.x,',
+        '        (pixel.y - uViewportSize.y * 0.5) / max(uCameraZoom, 0.000001) + uCameraFocal.y',
+        '    );',
+        '    float radius = distance(world, uRadialCenterWorld);',
+        '    for (int i = 1; i < ' + GRADIENT_MAX_STOPS + '; i++) {',
+        '        if (i >= uCount) break;',
+        '        float a = uOffsets[i - 1];',
+        '        float b = uOffsets[i];',
+        '        if (radius <= b || i == uCount - 1) {',
+        '            float span = max(b - a, 0.000001);',
+        '            float localT = clamp((radius - a) / span, 0.0, 1.0);',
+        '            return mix(uColors[i - 1], uColors[i], localT);',
+        '        }',
+        '    }',
+        '    if (uCount >= 32) return uColors[31];',
+        '    if (uCount == 31) return uColors[30];',
+        '    if (uCount == 30) return uColors[29];',
+        '    if (uCount == 29) return uColors[28];',
+        '    if (uCount == 28) return uColors[27];',
+        '    if (uCount == 27) return uColors[26];',
+        '    if (uCount == 26) return uColors[25];',
+        '    if (uCount == 25) return uColors[24];',
+        '    if (uCount == 24) return uColors[23];',
+        '    if (uCount == 23) return uColors[22];',
+        '    if (uCount == 22) return uColors[21];',
+        '    if (uCount == 21) return uColors[20];',
+        '    if (uCount == 20) return uColors[19];',
+        '    if (uCount == 19) return uColors[18];',
+        '    if (uCount == 18) return uColors[17];',
+        '    if (uCount == 17) return uColors[16];',
+        '    if (uCount == 16) return uColors[15];',
+        '    if (uCount == 15) return uColors[14];',
+        '    if (uCount == 14) return uColors[13];',
+        '    if (uCount == 13) return uColors[12];',
+        '    if (uCount == 12) return uColors[11];',
+        '    if (uCount == 11) return uColors[10];',
+        '    if (uCount == 10) return uColors[9];',
+        '    if (uCount == 9) return uColors[8];',
+        '    if (uCount == 8) return uColors[7];',
+        '    if (uCount == 7) return uColors[6];',
+        '    if (uCount == 6) return uColors[5];',
+        '    if (uCount == 5) return uColors[4];',
+        '    if (uCount == 4) return uColors[3];',
+        '    if (uCount == 3) return uColors[2];',
+        '    if (uCount == 2) return uColors[1];',
+        '    return uColors[0];',
+        '}',
+        'vec3 freeformColor() {',
+        '    float sumW = 0.0;',
+        '    vec3 sumC = vec3(0.0);',
+        '    for (int i = 0; i < ' + GRADIENT_MAX_STOPS + '; i++) {',
+        '        if (i >= uCount) break;',
+        '        vec2 delta = vUv - uPoints[i];',
+        '        float d2 = dot(delta, delta);',
+        '        if (d2 < 0.000001) return uColors[i];',
+        '        float w = 1.0 / d2;',
+        '        sumW += w;',
+        '        sumC += uColors[i] * w;',
+        '    }',
+        '    return sumC / max(sumW, 0.00001);',
+        '}',
+        'void main() {',
+        '    vec4 src = texture2D(uSource, vUv);',
+        '    vec3 color = uColors[0];',
+        '    if (uMode == 0) color = linearColor();',
+        '    else if (uMode == 1) color = radialColor();',
+        '    else if (uMode == 2) color = freeformColor();',
+        '    else if (uMode == 3 && uCount >= 3) color = triangleColor();',
+        '    else if (uCount == 1) color = uColors[0];',
+        '    else color = linearColor();',
+        '    gl_FragColor = vec4(color * src.a, src.a);',
+        '}'
+    ].join('\n');
+
+    function ensureGradientProgram(gl) {
+        if (gl.__lrmodGradientProgram) return gl.__lrmodGradientProgram;
+        var vs = compileShader(gl, gl.VERTEX_SHADER, GRADIENT_VERTEX_SRC);
+        var fs = compileShader(gl, gl.FRAGMENT_SHADER, GRADIENT_FRAGMENT_SRC);
+        var prog = gl.createProgram();
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+            var info = gl.getProgramInfoLog(prog);
+            throw new Error('gradient program link error: ' + info);
+        }
+        var out = {
+            program: prog,
+            aPos: gl.getAttribLocation(prog, 'aPos'),
+            uSource: gl.getUniformLocation(prog, 'uSource'),
+            uCount: gl.getUniformLocation(prog, 'uCount'),
+            uMode: gl.getUniformLocation(prog, 'uMode'),
+            uOffsets: gl.getUniformLocation(prog, 'uOffsets'),
+            uSpreads: gl.getUniformLocation(prog, 'uSpreads'),
+            uLinearA: gl.getUniformLocation(prog, 'uLinearA'),
+            uLinearB: gl.getUniformLocation(prog, 'uLinearB'),
+            uRadialCenter: gl.getUniformLocation(prog, 'uRadialCenter'),
+            uRadialCenterWorld: gl.getUniformLocation(prog, 'uRadialCenterWorld'),
+            uViewportSize: gl.getUniformLocation(prog, 'uViewportSize'),
+            uCameraFocal: gl.getUniformLocation(prog, 'uCameraFocal'),
+            uCameraZoom: gl.getUniformLocation(prog, 'uCameraZoom'),
+            uPoints: gl.getUniformLocation(prog, 'uPoints'),
+            uColors: gl.getUniformLocation(prog, 'uColors')
+        };
+        gl.__lrmodGradientProgram = out;
+        return out;
+    }
+
+    function ensureGradientSourceTexture(gl) {
+        if (gl.__lrmodGradientSourceTexture) return gl.__lrmodGradientSourceTexture;
+        var tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.__lrmodGradientSourceTexture = tex;
+        return tex;
+    }
+
+    function apply2DPointGradientToSharedCapture(gl, canvas, gradient, camera, opts, mode) {
+        if (!gl || !canvas || !gradient || !gradient.stops || !gradient.stops.length) return;
+        var sourceStops = gradient.stops.slice(0, GRADIENT_MAX_STOPS).map(function (p) { return { x: p.x, y: p.y, color: p.color }; });
+        mode = normalizeGradientMode(mode);
+        var w = opts && opts.width ? opts.width : canvas.width;
+        var h = opts && opts.height ? opts.height : canvas.height;
+        var zoom = camera && Number(camera.zoom) > 0 ? Number(camera.zoom) : 1;
+        var fx = camera && Number.isFinite(Number(camera.focalX)) ? Number(camera.focalX) : 0;
+        var fy = camera && Number.isFinite(Number(camera.focalY)) ? Number(camera.focalY) : 0;
+        function toUv(p) {
+            var sx = ((p.x - fx) * zoom + w / 2) / w;
+            var sy = 1 - (((p.y - fy) * zoom + h / 2) / h);
+            return { x: sx, y: sy };
+        }
+        var points = sourceStops.map(function (p) {
+            var uv = toUv(p);
+            return { x: uv.x, y: uv.y, color: p.color, x0: p.x, y0: p.y };
+        });
+
+        var radialCenter = points[0] || { x: 0.5, y: 0.5 };
+        if (mode === 'radial' && points.length > 1) {
+            var centerWorld = sourceStops[0];
+            var others = points.slice(1);
+            others.sort(function (a, b) {
+                var da = (a.x0-centerWorld.x)*(a.x0-centerWorld.x) + (a.y0-centerWorld.y)*(a.y0-centerWorld.y);
+                var db = (b.x0-centerWorld.x)*(b.x0-centerWorld.x) + (b.y0-centerWorld.y)*(b.y0-centerWorld.y);
+                return da - db;
+            });
+            points = [points[0]].concat(others);
+        } else if (mode === 'linear' && points.length > 1) {
+            var linearA0 = points[0], linearB0 = points[points.length - 1];
+            var ldx = linearB0.x - linearA0.x, ldy = linearB0.y - linearA0.y;
+            var lden = Math.max(ldx * ldx + ldy * ldy, 0.000001);
+            points.forEach(function (pt) {
+                pt._offset = ((pt.x-linearA0.x)*ldx + (pt.y-linearA0.y)*ldy) / lden;
+            });
+            points.sort(function (a, b) { return a._offset - b._offset; });
+            var lmin = points[0]._offset, lmax = points[points.length - 1]._offset;
+            var lspan = Math.max(0.000001, lmax-lmin);
+            points.forEach(function (pt) { pt._offset = (pt._offset-lmin)/lspan; });
+        }
+        var program;
+        try {
+            program = ensureGradientProgram(gl);
+            var texture = ensureGradientSourceTexture(gl);
+            var quad = ensureQuadBuffer(gl);
+            var prevProgram = gl.getParameter(gl.CURRENT_PROGRAM);
+            var prevBlend = gl.getParameter(gl.BLEND);
+            var prevArrayBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING);
+            var prevActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
+            var prevViewport = gl.getParameter(gl.VIEWPORT);
+
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.disable(gl.BLEND);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, canvas.width, canvas.height, 0);
+            gl.useProgram(program.program);
+            gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+            gl.enableVertexAttribArray(program.aPos);
+            gl.vertexAttribPointer(program.aPos, 2, gl.FLOAT, false, 0, 0);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.uniform1i(program.uSource, 0);
+            gl.uniform1i(program.uCount, points.length);
+            var modeCode = mode === 'linear' ? 0 : (mode === 'radial' ? 1 : (mode === 'freeform' ? 2 : 3));
+            gl.uniform1i(program.uMode, modeCode);
+
+            var linearA = points[0] || { x: 0.5, y: 0.5 };
+            var linearB = points.length > 1 ? points[points.length - 1] : linearA;
+            gl.uniform2f(program.uLinearA, linearA.x, linearA.y);
+            gl.uniform2f(program.uLinearB, linearB.x, linearB.y);
+            gl.uniform2f(program.uRadialCenter, radialCenter.x, radialCenter.y);
+            var radialCenterWorld0 = sourceStops[0] || { x: 0, y: 0 };
+            gl.uniform2f(program.uRadialCenterWorld, radialCenterWorld0.x, radialCenterWorld0.y);
+            gl.uniform2f(program.uViewportSize, w, h);
+            gl.uniform2f(program.uCameraFocal, fx, fy);
+            gl.uniform1f(program.uCameraZoom, zoom);
+
+            var offsetData = new Float32Array(points.length);
+            if (points.length) offsetData[0] = 0;
+            if (mode === 'radial' && points.length > 1) {
+                var centerWorld0 = sourceStops[0];
+                var radii = points.slice(1).map(function (p) {
+                    return Math.hypot(p.x0-centerWorld0.x, p.y0-centerWorld0.y);
+                });
+
+                radii.forEach(function (r, i) { offsetData[i+1] = r; });
+            } else {
+                points.forEach(function (p, i) { offsetData[i] = Number.isFinite(p._offset) ? p._offset : 0; });
+            }
+
+            var spreadData = new Float32Array(points.length);
+            for (var si = 0; si < points.length; si++) {
+                var nearest = Infinity;
+                for (var sj = 0; sj < points.length; sj++) {
+                    if (si === sj) continue;
+                    var ddx = points[si].x - points[sj].x, ddy = points[si].y - points[sj].y;
+                    var d2 = ddx*ddx + ddy*ddy;
+                    if (d2 > 0 && d2 < nearest) nearest = d2;
+                }
+                spreadData[si] = Number.isFinite(nearest) ? Math.sqrt(nearest) * 1.5 : 0.25;
+            }
+
+            var pointData = new Float32Array(points.length * 2);
+            var colorData = new Float32Array(points.length * 3);
+            points.forEach(function (stop, i) {
+                pointData[i * 2] = stop.x;
+                pointData[i * 2 + 1] = stop.y;
+                var rgb = rgbFromHex(stop.color);
+                colorData[i * 3] = rgb.r / 255;
+                colorData[i * 3 + 1] = rgb.g / 255;
+                colorData[i * 3 + 2] = rgb.b / 255;
+            });
+            gl.uniform2fv(program.uPoints, pointData);
+            gl.uniform1fv(program.uOffsets, offsetData);
+            gl.uniform1fv(program.uSpreads, spreadData);
+            gl.uniform3fv(program.uColors, colorData);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            gl.disableVertexAttribArray(program.aPos);
+            gl.bindBuffer(gl.ARRAY_BUFFER, prevArrayBuffer);
+            gl.useProgram(prevProgram);
+            if (prevBlend) gl.enable(gl.BLEND); else gl.disable(gl.BLEND);
+            gl.activeTexture(prevActiveTexture);
+            gl.viewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+        } catch (e) {
+            err('gradient GPU pass failed', e);
+        }
+    }
+
     function ensureLayerDisplayCanvas(inst, rig, layerId, entry) {
+
+        if (!rig.isSecondary && entry.captureCanvas) {
+            syncCanvasSize(entry.captureCanvas, inst.canvas);
+            entry.displayCanvas = entry.captureCanvas;
+            entry.displayCtx = entry.captureCtx || entry.captureCanvas.getContext('2d');
+            return entry.captureCanvas;
+        }
+
         var s = getEffectiveSetting(layerId, getFrameForInstance(inst, rig));
         var gradient = normalizeGradient(s.gradient);
         var solidColor = (!gradient && s.color) ? normalizeHexColor(s.color) : null;
-        if (!gradient && !solidColor) {
-            if (entry.displayCanvas && entry.displayCanvas.parentNode) entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
-            entry.displayCanvas = null;
-            entry.displayCtx = null;
-            return entry.canvas;
-        }
         if (!entry.displayCanvas) {
             var c = document.createElement('canvas');
             c.className = 'lrmod-layer-gradient-display';
@@ -1247,57 +1662,9 @@
         ctx.globalAlpha = 1;
         ctx.filter = 'none';
         ctx.drawImage(entry.captureCanvas || entry.canvas, 0, 0);
-        ctx.globalCompositeOperation = 'source-in';
-
         if (solidColor) {
+            ctx.globalCompositeOperation = 'source-in';
             ctx.fillStyle = solidColor;
-            ctx.fillRect(0, 0, entry.displayCanvas.width, entry.displayCanvas.height);
-            ctx.globalCompositeOperation = 'source-over';
-            return entry.displayCanvas;
-        }
-
-        var cam = rig.lastCamera;
-        var opts = rig.lastRenderOpts;
-        if (!cam || !opts || !opts.width || !opts.height) {
-            ctx.fillStyle = gradient.stops[0].color;
-            ctx.fillRect(0, 0, entry.displayCanvas.width, entry.displayCanvas.height);
-            ctx.globalCompositeOperation = 'source-over';
-            return entry.displayCanvas;
-        }
-
-        var sx = opts.width / entry.displayCanvas.width;
-        var sy = opts.height / entry.displayCanvas.height;
-        function screenPoint(stop) {
-            return {
-                x: ((stop.x - cam.focalX) * cam.zoom + opts.width / 2) / sx,
-                y: ((stop.y - cam.focalY) * cam.zoom + opts.height / 2) / sy
-            };
-        }
-        var pts = gradient.stops.map(function (stop) {
-            return { stop: stop, p: screenPoint(stop) };
-        });
-
-        if (pts.length === 1) {
-            ctx.fillStyle = pts[0].stop.color;
-            ctx.fillRect(0, 0, entry.displayCanvas.width, entry.displayCanvas.height);
-        } else {
-            var a = pts[0].p;
-            var b = pts[pts.length - 1].p;
-            var dx = b.x - a.x, dy = b.y - a.y;
-            var denom = dx * dx + dy * dy;
-            if (denom < 0.000001) denom = 1;
-            pts.forEach(function (item) {
-                item.offset = ((item.p.x - a.x) * dx + (item.p.y - a.y) * dy) / denom;
-            });
-            pts.sort(function (p, q) { return p.offset - q.offset; });
-            var first = Math.min.apply(null, pts.map(function (p) { return p.offset; }));
-            var last = Math.max.apply(null, pts.map(function (p) { return p.offset; }));
-            var range = Math.max(0.000001, last - first);
-            var grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-            pts.forEach(function (item) {
-                grad.addColorStop(Math.max(0, Math.min(1, (item.offset - first) / range)), item.stop.color);
-            });
-            ctx.fillStyle = grad;
             ctx.fillRect(0, 0, entry.displayCanvas.width, entry.displayCanvas.height);
         }
         ctx.globalCompositeOperation = 'source-over';
@@ -1307,6 +1674,7 @@
     function getLayerVisualCanvas(inst, rig, layerId, entry) {
         if (!entry) return null;
 
+        if (!rig.isSecondary && entry.captureCanvas) return entry.captureCanvas;
         if (rig.isSecondary) {
             var effective = getEffectiveSetting(layerId, getFrameForInstance(inst, rig));
             if (!normalizeGradient(effective.gradient) && !effective.color) return entry.captureCanvas || entry.canvas;
@@ -1318,26 +1686,10 @@
         var entry = rig.layerCanvases.get(layerId);
         if (!entry) return;
         try {
-            if (rig.isSecondary) {
-                if (entry.captureCtx && entry.captureCanvas) {
-                    entry.captureCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    entry.captureCtx.clearRect(0, 0, entry.captureCanvas.width, entry.captureCanvas.height);
-                }
-                if (entry.displayCtx && entry.displayCanvas) {
-                    entry.displayCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    entry.displayCtx.clearRect(0, 0, entry.displayCanvas.width, entry.displayCanvas.height);
-                }
-                entry.secondaryCaptureSerial = rig._secondaryRenderSerial;
-            } else if (entry.gl && entry.canvas) {
-                entry.gl.viewport(0, 0, entry.canvas.width, entry.canvas.height);
-                entry.gl.clearColor(0, 0, 0, 0);
-                entry.gl.clear(entry.gl.COLOR_BUFFER_BIT);
-                if (entry.displayCtx && entry.displayCanvas) {
-                    entry.displayCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    entry.displayCtx.clearRect(0, 0, entry.displayCanvas.width, entry.displayCanvas.height);
-                }
-            }
-        } catch (e) { /* ignore */ }
+            clear2DCanvas(entry.captureCanvas);
+            clear2DCanvas(entry.displayCanvas);
+            entry.secondaryCaptureSerial = rig._secondaryRenderSerial;
+        } catch (e) {}
     }
 
     function clearHiddenCustomLayerOverlays(inst, rig) {
@@ -1361,24 +1713,15 @@
                 rig.lastRenderOpts = opts || rig.lastRenderOpts;
                 if (rig.isSecondary) getFrameForInstance(inst, rig);
 
-                if (rig.isSecondary) {
-                    var secondaryEntry = getOrCreateLayerEntry(inst, rig, layerId);
-                    if (!secondaryEntry || !captureSecondaryLayerTo2D(inst, rig, secondaryEntry, scene, camera, opts)) {
-                        return original(scene, camera, opts);
-                    }
-                    ensureLayerDisplayCanvas(inst, rig, layerId, secondaryEntry);
-                    return;
-                }
-
                 var entry = getOrCreateLayerEntry(inst, rig, layerId);
-                if (!entry) return original(scene, camera, opts);
-                redrawIntoEntry(entry, inst.canvas, function () {
-                    entry.renderer.render(scene, camera, Object.assign({}, opts, { transparent: true }));
-                }, beginSharedFrame(rig, 'layer:' + layerId));
+                if (!entry || !captureLayerTo2D(inst, rig, entry, layerId, scene, camera, opts)) {
+                    return original(scene, camera, opts);
+                }
                 ensureLayerDisplayCanvas(inst, rig, layerId, entry);
+                return;
             } catch (e) {
                 err('layer render redirect failed for layer ' + layerId + ', falling back to normal render', e);
-                try { return original(scene, camera, opts); } catch (e2) { /* ignore */ }
+                try { return original(scene, camera, opts); } catch (e2) {}
             }
         };
         rendererObj.render.__lrmodOriginal = original;
@@ -1407,7 +1750,7 @@
             unpatchRendererInstance(inst.playbackRenderer);
             unpatchSpriteRenderers(inst);
             unpatchToolRenderers(inst);
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
     }
 
     function clear2DCanvas(canvas) {
@@ -1418,17 +1761,25 @@
                 ctx.setTransform(1, 0, 0, 1, 0, 0);
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
     }
 
     function disposeSharedCaptureOnly(rig) {
         if (!rig) return;
         try {
-            if (rig.secondaryLayerCaptureGl) {
-                var ext = rig.secondaryLayerCaptureGl.getExtension('WEBGL_lose_context');
+            if (rig.layerCaptureGl) {
+                var ext = rig.layerCaptureGl.getExtension('WEBGL_lose_context');
                 if (ext) ext.loseContext();
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
+        rig.layerCaptureCanvas = null;
+        rig.layerCaptureGl = null;
+        rig.layerCaptureRenderer = null;
+        rig.layerCapturePixels = null;
+        rig.layerCaptureImageData = null;
+        rig.layerCaptureW = 0;
+        rig.layerCaptureH = 0;
+
         rig.secondaryLayerCaptureCanvas = null;
         rig.secondaryLayerCaptureGl = null;
         rig.secondaryLayerCaptureRenderer = null;
@@ -1446,12 +1797,12 @@
                 rig.riderGl.clearColor(0, 0, 0, 0);
                 rig.riderGl.clear(rig.riderGl.COLOR_BUFFER_BIT);
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         if (rig.riderCanvas) {
             rig.riderCanvas.style.display = 'none';
         }
         if (dispose && rig.riderCanvas) {
-            try { disposeGlEntry({ canvas: rig.riderCanvas, gl: rig.riderGl }); } catch (e) { /* ignore */ }
+            try { disposeGlEntry({ canvas: rig.riderCanvas, gl: rig.riderGl }); } catch (e) {}
             rig.riderCanvas = null;
             rig.riderGl = null;
             rig.riderRenderers = null;
@@ -1464,14 +1815,14 @@
             if (!rig) return;
             try {
                 rig.layerCanvases.forEach(function (entry) {
-                    if (entry.gl && entry.canvas) {
-                        entry.gl.viewport(0, 0, entry.canvas.width, entry.canvas.height);
-                        entry.gl.clearColor(0, 0, 0, 0);
-                        entry.gl.clear(entry.gl.COLOR_BUFFER_BIT);
-                    }
                     clear2DCanvas(entry.captureCanvas);
                     clear2DCanvas(entry.displayCanvas);
                 });
+                if (rig.layerCaptureGl && rig.layerCaptureCanvas) {
+                    rig.layerCaptureGl.viewport(0, 0, rig.layerCaptureCanvas.width, rig.layerCaptureCanvas.height);
+                    rig.layerCaptureGl.clearColor(0, 0, 0, 0);
+                    rig.layerCaptureGl.clear(rig.layerCaptureGl.COLOR_BUFFER_BIT);
+                }
                 rig.toolCanvases.forEach(function (entry) {
                     if (entry.gl && entry.canvas) {
                         entry.gl.viewport(0, 0, entry.canvas.width, entry.canvas.height);
@@ -1484,7 +1835,7 @@
                 rig._secondaryFrameInitialized = false;
                 rig._secondaryFrame = 0;
                 rig._secondaryExplicitFrameLast = null;
-            } catch (e) { /* ignore */ }
+            } catch (e) {}
         });
     }
 
@@ -1527,7 +1878,7 @@
                     }, beginSharedFrame(rig, 'rider'));
                 } catch (e) {
                     err('rider render redirect failed, falling back to normal render', e);
-                    try { return original(bg, onion, fg, spriteSvg, image, camera, opts); } catch (e2) { /* ignore */ }
+                    try { return original(bg, onion, fg, spriteSvg, image, camera, opts); } catch (e2) {}
                 }
             };
             rendererObj.render.__lrmodOriginal = original;
@@ -1557,7 +1908,7 @@
                     });
                 } catch (e) {
                     err('tool overlay redirect failed for ' + field + ', falling back to normal render', e);
-                    try { return original(scene, camera, opts); } catch (e2) { /* ignore */ }
+                    try { return original(scene, camera, opts); } catch (e2) {}
                 }
             };
             rendererObj.render.__lrmodOriginal = original;
@@ -1607,7 +1958,7 @@
         window.onDisplayRender = function () {
             try { onDisplayRenderTick(); } catch (e) { err('onDisplayRender tick failed', e); }
             if (typeof previous === 'function') {
-                try { previous(); } catch (e2) { /* ignore */ }
+                try { previous(); } catch (e2) {}
             }
         };
         onDisplayRenderHooked = true;
@@ -1978,7 +2329,7 @@
             if (secondaryGetPixelsProto.getPixels && secondaryGetPixelsProto.getPixels.__lrmodSecondaryGetPixels) {
                 secondaryGetPixelsProto.getPixels = secondaryGetPixelsOriginal;
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         secondaryGetPixelsHooked = false;
         secondaryGetPixelsProto = null;
         secondaryGetPixelsOriginal = null;
@@ -2000,7 +2351,7 @@
             for (var i = 0; i < layers.length; i++) {
                 if (layers[i].id === layerId) return i;
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return 0;
     }
 
@@ -2133,7 +2484,13 @@
             clearRiderOverlay(rig, true);
             rig.folderGroups.forEach(function(g){ if(g&&g.parentNode)g.parentNode.removeChild(g); });
             rig.folderGroups.clear();
-            rig.layerCanvases.forEach(function(e){ if(e.displayCanvas&&e.displayCanvas.parentNode)e.displayCanvas.parentNode.removeChild(e.displayCanvas); clear2DCanvas(e.captureCanvas); clear2DCanvas(e.displayCanvas); });
+            rig.layerCanvases.forEach(function(e){
+                clear2DCanvas(e.captureCanvas);
+                clear2DCanvas(e.displayCanvas);
+                if(e.captureCanvas&&e.captureCanvas.parentNode)e.captureCanvas.parentNode.removeChild(e.captureCanvas);
+                if(e.displayCanvas&&e.displayCanvas.parentNode)e.displayCanvas.parentNode.removeChild(e.displayCanvas);
+            });
+            rig.layerCanvases.clear();
             rig.toolCanvases.forEach(function(e){ if(e.canvas&&e.canvas.parentNode)e.canvas.parentNode.removeChild(e.canvas); clear2DCanvas(e.canvas); });
             disposeSharedCaptureOnly(rig);
             try { inst.rerender(); } catch (e) { err('vanilla rerender after FX disable failed', e); }
@@ -2164,19 +2521,20 @@
         var valid = {};
         try {
             window.Selectors.getTrackLayers().forEach(function (l) { valid[l.id] = true; });
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         knownInstances.forEach(function (inst) {
             var rig = instanceRigs.get(inst);
             if (!rig) return;
             Array.from(rig.layerCanvases.keys()).forEach(function (layerId) {
                 if (!valid[layerId] || !isLayerCaptureNeeded(layerId)) {
                     var entry = rig.layerCanvases.get(layerId);
-                    if (rig.isSecondary) {
-                        if (entry && entry.captureCanvas) entry.captureCanvas.width = entry.captureCanvas.height = 1;
-                        if (entry && entry.displayCanvas && entry.displayCanvas.parentNode) entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
-                    } else {
-                        if (entry.captureCanvas) clear2DCanvas(entry.captureCanvas);
-                        if (entry.displayCanvas && entry.displayCanvas.parentNode) entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
+                    if (entry && entry.captureCanvas) {
+                        clear2DCanvas(entry.captureCanvas);
+                        if (entry.captureCanvas.parentNode) entry.captureCanvas.parentNode.removeChild(entry.captureCanvas);
+                    }
+                    if (entry && entry.displayCanvas) {
+                        clear2DCanvas(entry.displayCanvas);
+                        if (entry.displayCanvas.parentNode) entry.displayCanvas.parentNode.removeChild(entry.displayCanvas);
                     }
                     rig.layerCanvases.delete(layerId);
                 }
@@ -2228,7 +2586,7 @@
                 unpatchToolRenderers(inst);
                 var rig = instanceRigs.get(inst);
                 if (rig) { rig.active=false; }
-            } catch (e) { /* ignore */ }
+            } catch (e) {}
         });
         log('mod disabled - rendering reverted to vanilla. Run window.LRLayerFX.enable() to re-enable.');
     }
@@ -2429,12 +2787,15 @@
         var frame = getCurrentFrame();
         var base = getSetting(layerId);
         var kfs = normalizeKeyframes(base.keyframes);
-        var idx = kfs.findIndex(function (kf) { return kf.frame === frame; });
+        if (!kfs.length) {
 
+            setSetting(layerId, { gradient: normalized });
+            return;
+        }
+        var idx = kfs.findIndex(function (kf) { return kf.frame === frame; });
         if (idx >= 0) {
             kfs[idx] = Object.assign({}, kfs[idx], {
-                gradient: normalized,
-                opacity: kfs[idx].opacity
+                gradient: normalized
             });
             if (!normalized) {
                 delete kfs[idx].gradient;
@@ -2445,7 +2806,6 @@
             setSetting(layerId, { keyframes: normalizeKeyframes(kfs) }, { forceBase: true });
             return;
         }
-
         var effective = getEffectiveSetting(layerId, frame);
         var kf = snapshotForKeyframe(layerId, effective);
         if (normalized) {
@@ -2473,6 +2833,7 @@
         var layerId = activeGradientEditor && activeGradientEditor.layerId;
         activeGradientEditor = null;
         removeGradientEditorMarkers();
+        updateGradientEditorButtonState();
         scheduleUIRescan();
         if (layerId != null) refreshOpenPopover(layerId);
         scheduleRenderReconcile();
@@ -2491,8 +2852,9 @@
             warn('could not find primary Line Rider canvas for gradient editor');
             return;
         }
-        closePopover();
+
         activeGradientEditor = { layerId: layerId, inst: primary };
+        updateGradientEditorButtonState();
         scheduleRenderReconcile();
         installGradientEditorInputHandler();
         ensureGradientEditorOverlay();
@@ -2541,7 +2903,9 @@
 
         document.addEventListener('pointerdown', function (e) {
             if (!activeGradientEditor) return;
-            if (e.target && e.target.closest && e.target.closest('#lrmod-gradient-editor-overlay')) return;
+
+            if (e.button !== 0) return;
+            if (e.target && e.target.closest && (e.target.closest('#lrmod-gradient-editor-overlay') || e.target.closest('.lrmod-fx-popover'))) return;
             if (!isClientPointInCanvas(activeGradientEditor.inst, e.clientX, e.clientY)) return;
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -2549,7 +2913,9 @@
 
         document.addEventListener('pointerup', function (e) {
             if (!activeGradientEditor) return;
-            if (e.target && e.target.closest && e.target.closest('#lrmod-gradient-editor-overlay')) return;
+
+            if (e.button !== 0) return;
+            if (e.target && e.target.closest && (e.target.closest('#lrmod-gradient-editor-overlay') || e.target.closest('.lrmod-fx-popover'))) return;
             if (!isClientPointInCanvas(activeGradientEditor.inst, e.clientX, e.clientY)) return;
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -2560,7 +2926,7 @@
 
         document.addEventListener('contextmenu', function (e) {
             if (!activeGradientEditor) return;
-            if (e.target && e.target.closest && e.target.closest('#lrmod-gradient-editor-overlay')) return;
+            if (e.target && e.target.closest && (e.target.closest('#lrmod-gradient-editor-overlay') || e.target.closest('.lrmod-fx-popover'))) return;
             if (!isClientPointInCanvas(activeGradientEditor.inst, e.clientX, e.clientY)) return;
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -2568,7 +2934,7 @@
 
         document.addEventListener('dblclick', function (e) {
             if (!activeGradientEditor) return;
-            if (e.target && e.target.closest && e.target.closest('#lrmod-gradient-editor-overlay')) return;
+            if (e.target && e.target.closest && (e.target.closest('#lrmod-gradient-editor-overlay') || e.target.closest('.lrmod-fx-popover'))) return;
             if (!isClientPointInCanvas(activeGradientEditor.inst, e.clientX, e.clientY)) return;
             e.preventDefault();
             e.stopImmediatePropagation();
@@ -2622,7 +2988,7 @@
         input.addEventListener('change', apply);
         input.addEventListener('blur', function () { setTimeout(function () { if (!done) apply(); }, 0); });
         input.focus();
-        try { input.click(); } catch (e) { /* ignore */ }
+        try { input.click(); } catch (e) {}
     }
 
     function screenPositionForGradientStop(inst, stop) {
@@ -2761,10 +3127,18 @@
         });
     }
 
+    function updateGradientEditorButtonState() {
+        if (!activePopover || !activePopover.gradientButton) return;
+        var layerId = activePopover.layerId;
+        activePopover.gradientButton.textContent = activeGradientEditor && activeGradientEditor.layerId === layerId
+            ? 'Done Editing Gradient' : 'Edit Gradient';
+    }
+
     function addEditGradientButton(panel, btn, layerId) {
         var b = document.createElement('button');
         b.type = 'button';
         b.textContent = activeGradientEditor && activeGradientEditor.layerId === layerId ? 'Done Editing Gradient' : 'Edit Gradient';
+        b.className = 'lrmod-edit-gradient-btn';
         b.style.marginTop = '10px';
         b.style.width = '100%';
         b.style.cursor = 'pointer';
@@ -2870,6 +3244,25 @@
         blendRow.row.appendChild(select);
         panel.appendChild(blendRow.row);
 
+        if (type === LAYER_TYPE_LAYER) {
+            var gradientModeRow = makeRow('Gradient mode:');
+            var gradientModeSelect = document.createElement('select');
+            gradientModeSelect.style.width = '100%';
+            GRADIENT_MODES.forEach(function (gm) {
+                var gmOpt = document.createElement('option');
+                gmOpt.value = gm.value;
+                gmOpt.textContent = gm.label;
+                if (s.gradientMode === gm.value) gmOpt.selected = true;
+                gradientModeSelect.appendChild(gmOpt);
+            });
+            gradientModeSelect.addEventListener('change', function () {
+                setSetting(layerId, { gradientMode: gradientModeSelect.value });
+                updateButtonAppearance(btn, layerId);
+            });
+            gradientModeRow.row.appendChild(gradientModeSelect);
+            panel.appendChild(gradientModeRow.row);
+        }
+
         var frontWrap = document.createElement('label');
         frontWrap.style.display = 'flex';
         frontWrap.style.alignItems = 'center';
@@ -2936,7 +3329,13 @@
         panel.appendChild(resetBtn);
 
         document.body.appendChild(panel);
-        activePopover = { el: panel, layerId: layerId, anchorBtn: btn };
+        activePopover = {
+            el: panel,
+            layerId: layerId,
+            anchorBtn: btn,
+            gradientButton: panel.querySelector('button.lrmod-edit-gradient-btn')
+        };
+        updateGradientEditorButtonState();
         setTimeout(function () {
             document.addEventListener('mousedown', onDocMouseDownForPopover, true);
             window.addEventListener('resize', closePopover);
@@ -2951,7 +3350,7 @@
                 try {
                     var after = getCurrentFrame();
                     if (after !== before && activePopover) refreshOpenPopover(activePopover.layerId);
-                } catch (e2) { /* ignore */ }
+                } catch (e2) {}
             }, 0);
         }
     }, true);
@@ -2973,18 +3372,18 @@
             initReduxHookIfNeeded();
             hookOnDisplayRender();
             hookTrackFileSerialization();
-            try { loadSettingsFromTrackPayload({ layers: window.Selectors.getTrackLayers().map(function (l) { return l.toJSON ? l.toJSON() : l; }) }); } catch (e) { /* ignore */ }
+            try { loadSettingsFromTrackPayload({ layers: window.Selectors.getTrackLayers().map(function (l) { return l.toJSON ? l.toJSON() : l; }) }); } catch (e) {}
             scheduleUIRescan();
             scheduleRenderReconcile();
-            setInterval(function () { try { scheduleUIRescan(); } catch (e) { /* ignore */ } }, UI_SCAN_INTERVAL_MS);
-            setInterval(function () { try { scheduleRenderReconcile(); } catch (e) { /* ignore */ } }, RENDER_SCAN_INTERVAL_MS);
+            setInterval(function () { try { scheduleUIRescan(); } catch (e) {} }, UI_SCAN_INTERVAL_MS);
+            setInterval(function () { try { scheduleRenderReconcile(); } catch (e) {} }, RENDER_SCAN_INTERVAL_MS);
 
             try {
                 var millionsEnabled = window.store.getState().renderer.millionsEnabled;
                 if (!millionsEnabled) {
-                    warn('WebGL "Millions" renderer is not active in this browser - layer FX visuals will not apply (UI/persistence still work). This is normal on old/unaccelerated browsers.');
+                    warn('WebGL "Millions" renderer is not active in this browser - layer FX visuals will not apply.');
                 }
-            } catch (e) { /* ignore */ }
+            } catch (e) {}
 
             log('ready. Layer/folder FX buttons are active; FX is stored in track files. window.LRLayerFX.disable()/.enable() available if needed.');
         });
