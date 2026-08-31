@@ -2,8 +2,9 @@
 // @name         Line Rider Layer FX
 // @namespace    https://linerider.com/
 // @author       xavi
-// @description  layer opacity, blur, blend modes, gradients, and keyframes that save to track file
-// @version      1.9.0
+// @description  layer opacity, blur, blend modes, gradients, parallax, and keyframes that save to track file
+// @version      1.10.5
+// @license      LGPL 3; https://www.gnu.org/licenses/lgpl-3.0.en.html#license-text
 
 // @match        https://www.linerider.com/*
 // @match        https://*.official-linerider.com/*
@@ -27,7 +28,7 @@
     var LAYER_TYPE_LAYER = 0;
     var LAYER_TYPE_FOLDER = 1;
     var TRACK_FX_KEY = 'lrLayerFX';
-    var TRACK_FX_VERSION = 6;
+    var TRACK_FX_VERSION = 7;
 
     var GRADIENT_EDITOR_Z = 1000001;
     var UI_SCAN_INTERVAL_MS = 500;
@@ -178,8 +179,8 @@
     var GRADIENT_MODES = [
         { value: 'linear', label: 'Linear' },
         { value: 'radial', label: 'Radial' },
-        { value: 'freeform', label: 'Freeform' },
-        { value: 'barycentric', label: 'Barycentric (only works with 3 points)' }
+        { value: 'freeform', label: 'Freeform (Points)' },
+        { value: 'barycentric', label: 'Barycentric (3 Points)' }
     ];
 
     function normalizeGradientMode(mode) {
@@ -189,7 +190,7 @@
     }
 
     function defaultSetting() {
-        return { opacity: 1, blur: 0, blend: 'normal', front: false, gradient: null, gradientMode: 'linear', keyframes: [] };
+        return { opacity: 1, blur: 0, blend: 'normal', front: false, visible: true, gradient: null, gradientMode: 'linear', parallax: false, parallaxZ: 0, parallaxPitch: 0, parallaxYaw: 0, parallaxScaleLines: true, keyframes: [] };
     }
 
     function normalizeHexColor(color) {
@@ -220,7 +221,12 @@
             var item = {
                 frame: Number(kf.frame),
                 opacity: Math.max(0, Math.min(1, typeof kf.opacity === 'number' ? kf.opacity : 1)),
-                blur: Math.max(0, Math.min(MAX_BLUR_PX, Number.isFinite(Number(kf.blur)) ? Number(kf.blur) : 0))
+                blur: Math.max(0, Math.min(MAX_BLUR_PX, Number.isFinite(Number(kf.blur)) ? Number(kf.blur) : 0)),
+                blend: typeof kf.blend === 'string' ? kf.blend : 'normal',
+                visible: kf.visible !== false,
+                parallaxZ: Number.isFinite(Number(kf.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(kf.parallaxZ))) : 0,
+                parallaxPitch: Number.isFinite(Number(kf.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(kf.parallaxPitch))) : 0,
+                parallaxYaw: Number.isFinite(Number(kf.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(kf.parallaxYaw))) : 0
             };
             var g = normalizeGradient(kf.gradient);
             if (g) item.gradient = g;
@@ -242,8 +248,14 @@
             blur: Number.isFinite(Number(s.blur)) ? Math.max(0, Math.min(MAX_BLUR_PX, Number(s.blur))) : 0,
             blend: typeof s.blend === 'string' ? s.blend : 'normal',
             front: !!s.front,
+            visible: s.visible !== false,
             gradient: normalizeGradient(s.gradient),
             gradientMode: normalizeGradientMode(s.gradientMode),
+            parallax: !!s.parallax,
+            parallaxZ: Number.isFinite(Number(s.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(s.parallaxZ))) : 0,
+            parallaxPitch: Number.isFinite(Number(s.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(s.parallaxPitch))) : 0,
+            parallaxYaw: Number.isFinite(Number(s.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(s.parallaxYaw))) : 0,
+            parallaxScaleLines: s.parallaxScaleLines !== false,
             keyframes: normalizeKeyframes(s.keyframes)
         };
     }
@@ -283,8 +295,14 @@
             blur: Number.isFinite(Number(s.blur)) ? Math.max(0, Math.min(MAX_BLUR_PX, Number(s.blur))) : 0,
             blend: typeof s.blend === 'string' ? s.blend : 'normal',
             front: !!s.front,
+            visible: s.visible !== false,
             gradient: normalizeGradient(s.gradient),
             gradientMode: normalizeGradientMode(s.gradientMode),
+            parallax: !!s.parallax,
+            parallaxZ: Number.isFinite(Number(s.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(s.parallaxZ))) : 0,
+            parallaxPitch: Number.isFinite(Number(s.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(s.parallaxPitch))) : 0,
+            parallaxYaw: Number.isFinite(Number(s.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(s.parallaxYaw))) : 0,
+            parallaxScaleLines: s.parallaxScaleLines !== false,
             keyframes: normalizeKeyframes(s.keyframes)
         };
     }
@@ -295,7 +313,7 @@
         return (!('opacity' in s) || s.opacity >= 1) &&
             (!('blur' in s) || !Number(s.blur)) &&
             (!('blend' in s) || s.blend === 'normal' || !s.blend) &&
-            !s.front && !gradient && normalizeGradientMode(s.gradientMode) === 'linear' && normalizeKeyframes(s.keyframes).length === 0;
+            !s.front && s.visible !== false && !gradient && normalizeGradientMode(s.gradientMode) === 'linear' && !s.parallax && !Number(s.parallaxZ) && !Number(s.parallaxPitch) && !Number(s.parallaxYaw) && s.parallaxScaleLines !== false && normalizeKeyframes(s.keyframes).length === 0;
     }
 
     function settingsEqual(a, b) {
@@ -308,7 +326,13 @@
             blur: Math.max(0, Math.min(MAX_BLUR_PX, Number.isFinite(Number(s.blur)) ? Number(s.blur) : 0)),
             blend: typeof s.blend === 'string' ? s.blend : 'normal',
             front: !!s.front,
-            gradientMode: normalizeGradientMode(s.gradientMode)
+            visible: s.visible !== false,
+            gradientMode: normalizeGradientMode(s.gradientMode),
+            parallax: !!s.parallax,
+            parallaxZ: Number.isFinite(Number(s.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(s.parallaxZ))) : 0,
+            parallaxPitch: Number.isFinite(Number(s.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(s.parallaxPitch))) : 0,
+            parallaxYaw: Number.isFinite(Number(s.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(s.parallaxYaw))) : 0,
+            parallaxScaleLines: s.parallaxScaleLines !== false
         };
         var gradient = normalizeGradient(s.gradient);
         if (gradient) {
@@ -320,7 +344,7 @@
         var keyframes = normalizeKeyframes(s.keyframes);
         if (keyframes.length) {
             out.keyframes = keyframes.map(function (kf) {
-                var item = { frame: kf.frame, opacity: kf.opacity, blur: Math.max(0, Math.min(MAX_BLUR_PX, Number.isFinite(Number(kf.blur)) ? Number(kf.blur) : 0)) };
+                var item = { frame: kf.frame, opacity: kf.opacity, blur: Math.max(0, Math.min(MAX_BLUR_PX, Number.isFinite(Number(kf.blur)) ? Number(kf.blur) : 0)), blend: typeof kf.blend === 'string' ? kf.blend : 'normal', visible: kf.visible !== false, parallaxZ: Number.isFinite(Number(kf.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(kf.parallaxZ))) : 0, parallaxPitch: Number.isFinite(Number(kf.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(kf.parallaxPitch))) : 0, parallaxYaw: Number.isFinite(Number(kf.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(kf.parallaxYaw))) : 0 };
                 if (kf.gradient) item.gradient = { stops: kf.gradient.stops.map(function (stop) { return { x: stop.x, y: stop.y, color: stop.color }; }) };
                 else if (kf.color) item.color = kf.color;
                 return item;
@@ -381,7 +405,7 @@
     function snapshotForKeyframe(layerId, effective) {
         var layer = getLayerById(layerId);
         var frame = getCurrentFrame();
-        var item = { frame: frame, opacity: effective.opacity, blur: Math.max(0, Math.min(MAX_BLUR_PX, Number(effective.blur) || 0)) };
+        var item = { frame: frame, opacity: effective.opacity, blur: Math.max(0, Math.min(MAX_BLUR_PX, Number(effective.blur) || 0)), blend: typeof effective.blend === 'string' ? effective.blend : 'normal', visible: effective.visible !== false, parallaxZ: Number.isFinite(Number(effective.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(effective.parallaxZ))) : 0, parallaxPitch: Number.isFinite(Number(effective.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(effective.parallaxPitch))) : 0, parallaxYaw: Number.isFinite(Number(effective.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(effective.parallaxYaw))) : 0 };
         if (layer && layer.type === LAYER_TYPE_LAYER) {
             var g = normalizeGradient(effective.gradient);
             if (g) item.gradient = g;
@@ -404,6 +428,11 @@
         if (exact) {
             base.opacity = exact.opacity;
             base.blur = exact.blur;
+            base.blend = typeof exact.blend === 'string' ? exact.blend : base.blend;
+            base.visible = exact.visible !== false;
+            base.parallaxZ = Number.isFinite(Number(exact.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(exact.parallaxZ))) : base.parallaxZ;
+            base.parallaxPitch = Number.isFinite(Number(exact.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(exact.parallaxPitch))) : base.parallaxPitch;
+            base.parallaxYaw = Number.isFinite(Number(exact.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(exact.parallaxYaw))) : base.parallaxYaw;
             if (exact.gradient) { base.gradient = normalizeGradient(exact.gradient); base.color = undefined; }
             else if (exact.color) { base.gradient = null; base.color = normalizeHexColor(exact.color); }
             return base;
@@ -412,6 +441,11 @@
             var t = (frame - prev.frame) / Math.max(1, next.frame - prev.frame);
             base.opacity = lerp(prev.opacity, next.opacity, t);
             base.blur = lerp(prev.blur, next.blur, t);
+            base.blend = typeof prev.blend === 'string' ? prev.blend : base.blend;
+            base.visible = prev.visible !== false;
+            base.parallaxZ = lerp(Number(prev.parallaxZ) || 0, Number(next.parallaxZ) || 0, t);
+            base.parallaxPitch = lerp(Number(prev.parallaxPitch) || 0, Number(next.parallaxPitch) || 0, t);
+            base.parallaxYaw = lerp(Number(prev.parallaxYaw) || 0, Number(next.parallaxYaw) || 0, t);
             if (getLayerType(layerId) === LAYER_TYPE_LAYER) {
                 var g = interpolateGradient(prev, next, t);
                 if (g) { base.gradient = g; base.color = undefined; }
@@ -422,6 +456,11 @@
         if (prev) {
             base.opacity = prev.opacity;
             base.blur = prev.blur;
+            base.blend = typeof prev.blend === 'string' ? prev.blend : base.blend;
+            base.visible = prev.visible !== false;
+            base.parallaxZ = Number.isFinite(Number(prev.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(prev.parallaxZ))) : base.parallaxZ;
+            base.parallaxPitch = Number.isFinite(Number(prev.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(prev.parallaxPitch))) : base.parallaxPitch;
+            base.parallaxYaw = Number.isFinite(Number(prev.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(prev.parallaxYaw))) : base.parallaxYaw;
             if (getLayerType(layerId) === LAYER_TYPE_LAYER) {
                 if (prev.gradient) { base.gradient = normalizeGradient(prev.gradient); base.color = undefined; }
                 else if (prev.color) { base.gradient = null; base.color = normalizeHexColor(prev.color); }
@@ -438,6 +477,11 @@
         var kf = Object.assign({}, kfs[idx]);
         if (Object.prototype.hasOwnProperty.call(patch, 'opacity')) kf.opacity = Math.max(0, Math.min(1, Number(patch.opacity)));
         if (Object.prototype.hasOwnProperty.call(patch, 'blur')) kf.blur = Math.max(0, Math.min(MAX_BLUR_PX, Number(patch.blur) || 0));
+        if (Object.prototype.hasOwnProperty.call(patch, 'blend')) kf.blend = typeof patch.blend === 'string' ? patch.blend : 'normal';
+        if (Object.prototype.hasOwnProperty.call(patch, 'visible')) kf.visible = patch.visible !== false;
+        if (Object.prototype.hasOwnProperty.call(patch, 'parallaxZ')) kf.parallaxZ = Math.max(-2000, Math.min(2000, Number(patch.parallaxZ) || 0));
+        if (Object.prototype.hasOwnProperty.call(patch, 'parallaxPitch')) kf.parallaxPitch = Math.max(-20, Math.min(20, Number(patch.parallaxPitch) || 0));
+        if (Object.prototype.hasOwnProperty.call(patch, 'parallaxYaw')) kf.parallaxYaw = Math.max(-20, Math.min(20, Number(patch.parallaxYaw) || 0));
         if (Object.prototype.hasOwnProperty.call(patch, 'gradient')) {
             var g = normalizeGradient(patch.gradient);
             if (g) { kf.gradient = g; delete kf.color; }
@@ -496,19 +540,80 @@
                 updatedKeyframe = updateKeyframeSnapshot(layerId, { blur: patch.blur }) || updatedKeyframe;
             }
         }
+        if (!options.forceBase && Object.prototype.hasOwnProperty.call(patch, 'blend')) {
+            var blendFrame = getCurrentFrame();
+            var blendKfs = normalizeKeyframes(cur.keyframes);
+            if (blendKfs.length > 0) {
+                var blendIdx = blendKfs.findIndex(function (kf) { return kf.frame === blendFrame; });
+                if (blendIdx < 0) {
+                    var blendEffective = getEffectiveSetting(layerId, blendFrame);
+                    var blendNewKf = snapshotForKeyframe(layerId, blendEffective);
+                    blendNewKf.blend = typeof patch.blend === 'string' ? patch.blend : 'normal';
+                    blendKfs.push(blendNewKf);
+                    settings.set(layerId, Object.assign({}, cur, { keyframes: normalizeKeyframes(blendKfs) }));
+                } else {
+                    blendKfs[blendIdx].blend = typeof patch.blend === 'string' ? patch.blend : 'normal';
+                    settings.set(layerId, Object.assign({}, cur, { keyframes: normalizeKeyframes(blendKfs) }));
+                }
+                updatedKeyframe = true;
+            }
+        }
+        if (!options.forceBase && Object.prototype.hasOwnProperty.call(patch, 'visible')) {
+            var visFrame = getCurrentFrame();
+            var visKfs = normalizeKeyframes(cur.keyframes);
+            if (visKfs.length > 0) {
+                var visIdx = visKfs.findIndex(function (kf) { return kf.frame === visFrame; });
+                if (visIdx < 0) {
+                    var visEffective = getEffectiveSetting(layerId, visFrame);
+                    var visNewKf = snapshotForKeyframe(layerId, visEffective);
+                    visNewKf.visible = patch.visible !== false;
+                    visKfs.push(visNewKf);
+                } else {
+                    visKfs[visIdx].visible = patch.visible !== false;
+                }
+                settings.set(layerId, Object.assign({}, cur, { keyframes: normalizeKeyframes(visKfs) }));
+                updatedKeyframe = true;
+            }
+        }
         if (!options.forceBase && Object.prototype.hasOwnProperty.call(patch, 'gradient')) {
             updatedKeyframe = updateKeyframeSnapshot(layerId, { gradient: patch.gradient }) || updatedKeyframe;
         }
+        if (!options.forceBase && (Object.prototype.hasOwnProperty.call(patch, 'parallaxZ') || Object.prototype.hasOwnProperty.call(patch, 'parallaxPitch') || Object.prototype.hasOwnProperty.call(patch, 'parallaxYaw'))) {
+            var parFrame = getCurrentFrame();
+            var parKfs = normalizeKeyframes(cur.keyframes);
+            if (parKfs.length > 0) {
+                var parIdx = parKfs.findIndex(function (kf) { return kf.frame === parFrame; });
+                if (parIdx < 0) {
+                    var parEffective = getEffectiveSetting(layerId, parFrame);
+                    parKfs.push(snapshotForKeyframe(layerId, parEffective));
+                    parKfs = normalizeKeyframes(parKfs);
+                    parIdx = parKfs.findIndex(function (kf) { return kf.frame === parFrame; });
+                }
+                var parKf = Object.assign({}, parKfs[parIdx]);
+                if (Object.prototype.hasOwnProperty.call(patch, 'parallaxZ')) parKf.parallaxZ = Math.max(-2000, Math.min(2000, Number(patch.parallaxZ) || 0));
+                if (Object.prototype.hasOwnProperty.call(patch, 'parallaxPitch')) parKf.parallaxPitch = Math.max(-20, Math.min(20, Number(patch.parallaxPitch) || 0));
+                if (Object.prototype.hasOwnProperty.call(patch, 'parallaxYaw')) parKf.parallaxYaw = Math.max(-20, Math.min(20, Number(patch.parallaxYaw) || 0));
+                parKfs[parIdx] = parKf;
+                settings.set(layerId, Object.assign({}, cur, { keyframes: normalizeKeyframes(parKfs) }));
+                updatedKeyframe = true;
+            }
+        }
         var basePatch = Object.assign({}, patch);
-        if (updatedKeyframe) { delete basePatch.opacity; delete basePatch.blur; delete basePatch.gradient; }
+        if (updatedKeyframe) { delete basePatch.opacity; delete basePatch.blur; delete basePatch.gradient; delete basePatch.blend; delete basePatch.visible; delete basePatch.parallaxZ; delete basePatch.parallaxPitch; delete basePatch.parallaxYaw; }
         var effectiveBase = updatedKeyframe ? getSetting(layerId) : cur;
         var next = Object.assign({}, effectiveBase, basePatch);
         next.opacity=Math.max(0,Math.min(1,typeof next.opacity==='number'?next.opacity:1));
         next.blur=Math.max(0,Math.min(MAX_BLUR_PX,Number.isFinite(Number(next.blur))?Number(next.blur):0));
         next.blend=typeof next.blend==='string'?next.blend:'normal';
         next.front=!!next.front;
+        next.visible=next.visible !== false;
         next.gradient=normalizeGradient(next.gradient);
         next.gradientMode=normalizeGradientMode(next.gradientMode);
+        next.parallax=!!next.parallax;
+        next.parallaxZ=Math.max(-2000,Math.min(2000,Number.isFinite(Number(next.parallaxZ))?Number(next.parallaxZ):0));
+        next.parallaxPitch=Math.max(-20,Math.min(20,Number.isFinite(Number(next.parallaxPitch))?Number(next.parallaxPitch):0));
+        next.parallaxYaw=Math.max(-20,Math.min(20,Number.isFinite(Number(next.parallaxYaw))?Number(next.parallaxYaw):0));
+        next.parallaxScaleLines=next.parallaxScaleLines !== false;
         next.keyframes=normalizeKeyframes(next.keyframes);
         if (isDefaultSetting(next)) settings.delete(layerId); else settings.set(layerId,next);
         syncLayerFXProperty(layerId);
@@ -598,8 +703,14 @@
             blur: Number.isFinite(Number(raw.blur)) ? Math.max(0, Math.min(MAX_BLUR_PX, Number(raw.blur))) : 0,
             blend: typeof raw.blend === 'string' ? raw.blend : 'normal',
             front: !!raw.front,
+            visible: raw.visible !== false,
             gradient: normalizeGradient(raw.gradient),
             gradientMode: normalizeGradientMode(raw.gradientMode),
+            parallax: !!raw.parallax,
+            parallaxZ: Number.isFinite(Number(raw.parallaxZ)) ? Math.max(-2000, Math.min(2000, Number(raw.parallaxZ))) : 0,
+            parallaxPitch: Number.isFinite(Number(raw.parallaxPitch)) ? Math.max(-20, Math.min(20, Number(raw.parallaxPitch))) : 0,
+            parallaxYaw: Number.isFinite(Number(raw.parallaxYaw)) ? Math.max(-20, Math.min(20, Number(raw.parallaxYaw))) : 0,
+            parallaxScaleLines: raw.parallaxScaleLines !== false,
             keyframes: normalizeKeyframes(raw.keyframes)
         };
         return isDefaultSetting(setting) ? null : setting;
@@ -738,6 +849,8 @@
                 break;
             case 'SET_PLAYER_INDEX':
                 refreshPrimaryFrameNow();
+
+                setTimeout(function () { try { refreshPrimaryFrameNow(); } catch (e0) { err('deferred FX frame refresh failed', e0); } }, 0);
                 scheduleUIRescan();
                 scheduleRenderReconcile();
                 if (activePopover) refreshOpenPopover(activePopover.layerId);
@@ -1145,6 +1258,69 @@
         drawFn();
     }
 
+    var PARALLAX_PERSPECTIVE_DISTANCE = 4000;
+
+    function cloneSpatialPoint(point) {
+        if (!point || typeof point !== 'object') return point;
+        var out = Object.assign(Object.create(Object.getPrototypeOf(point)), point);
+        return out;
+    }
+
+    function parallaxTransformPoint(point, camera, setting) {
+        if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) return null;
+        var camX = camera && Number.isFinite(Number(camera.focalX)) ? Number(camera.focalX) : 0;
+        var camY = camera && Number.isFinite(Number(camera.focalY)) ? Number(camera.focalY) : 0;
+        var yaw = Number(setting.parallaxYaw) || 0;
+        var pitch = Number(setting.parallaxPitch) || 0;
+        var zDistance = Number(setting.parallaxZ) || 0;
+
+        var x = Number(point.x);
+        var y = Number(point.y);
+        var rawZ = x * yaw + y * pitch + zDistance;
+
+        var zoom = camera && Number.isFinite(Number(camera.zoom)) && Number(camera.zoom) > 0 ? Number(camera.zoom) : 1;
+        var z = rawZ * zoom;
+        var perspective = PARALLAX_PERSPECTIVE_DISTANCE;
+        var denom = perspective - z;
+        if (denom < perspective * 0.05) denom = perspective * 0.05;
+        var scale = perspective / denom;
+
+        var out = cloneSpatialPoint(point);
+        out.x = camX + (x - camX) * scale;
+        out.y = camY + (y - camY) * scale;
+        out.__lrmodParallaxScale = scale;
+        return out;
+    }
+
+    function transformParallaxScene(scene, camera, setting) {
+        if (!scene || !scene.layers || !setting || !setting.parallax) return scene;
+        var transformedScene = scene.__clone ? scene.__clone() : Object.assign(Object.create(Object.getPrototypeOf(scene)), scene);
+        transformedScene.layers = scene.layers.map(function (layer) {
+            if (!layer || !layer.entities || typeof layer.entities.map !== 'function') return layer;
+            var nextLayer = layer.__clone ? layer.__clone() : Object.assign(Object.create(Object.getPrototypeOf(layer)), layer);
+            nextLayer.entities = layer.entities.map(function (entity) {
+                if (!entity || typeof entity !== 'object') return entity;
+                var changed = false;
+                var next = Object.assign(Object.create(Object.getPrototypeOf(entity)), entity);
+                ['p1','p2','p3','p4','center','radialPoint'].forEach(function (key) {
+                    if (!entity[key] || typeof entity[key].x !== 'number' || typeof entity[key].y !== 'number') return;
+                    var tp = parallaxTransformPoint(entity[key], camera, setting);
+                    if (!tp) return;
+
+                    if (setting.parallaxScaleLines !== false && typeof entity[key].thickness === 'number') {
+                        tp.thickness = entity[key].thickness * tp.__lrmodParallaxScale;
+                    }
+                    delete tp.__lrmodParallaxScale;
+                    next[key] = tp;
+                    changed = true;
+                });
+                return changed ? next : entity;
+            });
+            return nextLayer;
+        });
+        return transformedScene;
+    }
+
     function captureLayerTo2D(inst, rig, entry, layerId, scene, camera, opts) {
         var sharedCanvas = rig.layerCaptureCanvas;
         var gl = rig.layerCaptureGl;
@@ -1155,7 +1331,15 @@
         gl.viewport(0, 0, w, h);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-        renderer.render(scene, camera, Object.assign({}, opts || {}, { transparent: true }));
+        var renderScene = scene;
+        var containingFolderId = getContainingFolderId(layerId);
+        if (containingFolderId >= 0) {
+            var folderEffective = getEffectiveSetting(containingFolderId, getFrameForInstance(inst, rig));
+            if (folderEffective.parallax && isLayerFXVisibleAtFrame(containingFolderId, getFrameForInstance(inst, rig))) {
+                renderScene = transformParallaxScene(scene, camera, folderEffective);
+            }
+        }
+        renderer.render(renderScene, camera, Object.assign({}, opts || {}, { transparent: true }));
 
         var effective = getEffectiveSetting(layerId, getFrameForInstance(inst, rig));
         var gradient = normalizeGradient(effective.gradient);
@@ -1245,6 +1429,18 @@
     function getFolderSettingForLayer(layerId) {
         var folderId = getContainingFolderId(layerId);
         return folderId >= 0 ? getSetting(folderId) : null;
+    }
+
+    function isLayerFXVisibleAtFrame(layerId, frame) {
+        var effective = getEffectiveSetting(layerId, frame);
+        if (effective.visible === false) return false;
+        try {
+            if (typeof window.getLayerVisibleAtTime === 'function') {
+                return window.getLayerVisibleAtTime(layerId, frame) !== false;
+            }
+        } catch (e) {}
+        var layer = getLayerById(layerId);
+        return !layer || layer.visible !== false;
     }
 
     function isLayerCaptureNeeded(layerId) {
@@ -1698,7 +1894,8 @@
         layers.forEach(function (layer) {
             if (layer.type !== LAYER_TYPE_LAYER) return;
             if (!isLayerCaptureNeeded(layer.id)) return;
-            if (layer.visible !== false) return;
+            var frame = getFrameForInstance(inst, rig);
+            if (isLayerFXVisibleAtFrame(layer.id, frame)) return;
             clearLayerCaptureForVisibility(inst, rig, layer.id);
         });
     }
@@ -1711,13 +1908,21 @@
                 if (modDisabled || !isLayerCaptureNeeded(layerId)) return original(scene, camera, opts);
                 rig.lastCamera = camera;
                 rig.lastRenderOpts = opts || rig.lastRenderOpts;
-                if (rig.isSecondary) getFrameForInstance(inst, rig);
+                var renderFrame = getFrameForInstance(inst, rig);
+                if (!isLayerFXVisibleAtFrame(layerId, renderFrame)) {
+                    clearLayerCaptureForVisibility(inst, rig, layerId);
+
+                    return;
+                }
 
                 var entry = getOrCreateLayerEntry(inst, rig, layerId);
                 if (!entry || !captureLayerTo2D(inst, rig, entry, layerId, scene, camera, opts)) {
                     return original(scene, camera, opts);
                 }
                 ensureLayerDisplayCanvas(inst, rig, layerId, entry);
+                var liveSetting = getEffectiveSetting(layerId, renderFrame);
+                var liveVisual = getLayerVisualCanvas(inst, rig, layerId, entry);
+                if (liveVisual) applyOverlayStyle(liveVisual, liveSetting, getFrameCameraZoom(inst, rig));
                 return;
             } catch (e) {
                 err('layer render redirect failed for layer ' + layerId + ', falling back to normal render', e);
@@ -1814,6 +2019,8 @@
             var rig = instanceRigs.get(inst);
             if (!rig) return;
             try {
+
+                unpatchAllRenderersForInstance(inst);
                 rig.layerCanvases.forEach(function (entry) {
                     clear2DCanvas(entry.captureCanvas);
                     clear2DCanvas(entry.displayCanvas);
@@ -1831,7 +2038,7 @@
                     }
                 });
                 clear2DCanvas(rig.secondaryCompositeCanvas);
-                clearRiderOverlay(rig, false);
+                clearRiderOverlay(rig, true);
                 rig._secondaryFrameInitialized = false;
                 rig._secondaryFrame = 0;
                 rig._secondaryExplicitFrameLast = null;
@@ -1942,6 +2149,28 @@
             }
 
             clearHiddenCustomLayerOverlays(inst, rig);
+            if (!rig.isSecondary) {
+                var displayZoom = getFrameCameraZoom(inst, rig);
+                var displayFrame = getFrameForInstance(inst, rig);
+                rig.layerCanvases.forEach(function (entry, layerId) {
+                    if (!entry || !entry.displayCanvas) return;
+                    var effective = getEffectiveSetting(layerId, displayFrame);
+                    if (!isLayerFXVisibleAtFrame(layerId, displayFrame)) {
+                        entry.displayCanvas.style.display = 'none';
+                        return;
+                    }
+                    entry.displayCanvas.style.display = 'block';
+                    applyOverlayStyle(entry.displayCanvas, effective, displayZoom);
+                });
+                rig.folderGroups.forEach(function (group, folderId) {
+                    if (!group) return;
+                    var folderSetting = getEffectiveSetting(folderId, displayFrame);
+                    var folderVisible = isLayerFXVisibleAtFrame(folderId, displayFrame);
+                    group.style.display = folderVisible ? 'block' : 'none';
+                    if (folderVisible) { applyOverlayStyle(group, folderSetting, displayZoom); applyFolderParallaxStyle(group, folderSetting); }
+                    else applyFolderParallaxStyle(group, folderSetting);
+                });
+            }
             if (!rig.isSecondary && activeGradientEditor) {
                 updateGradientEditorMarkers();
             }
@@ -2203,6 +2432,7 @@
         children.forEach(function (child) {
 
             if (child.visible === false) return;
+            if (!isLayerFXVisibleAtFrame(child.id, getFrameForInstance(inst, rig))) return;
             var entry = rig.layerCanvases.get(child.id);
             if (!entry) return;
             var s = getEffectiveSetting(child.id, getFrameForInstance(inst, rig));
@@ -2219,6 +2449,10 @@
         var front = [];
         compositeItems.forEach(function (item) {
             var setting = getEffectiveSetting(item.id, frame);
+            if (setting.visible === false) return;
+            if (typeof window.getLayerVisibleAtTime === 'function') {
+                try { if (window.getLayerVisibleAtTime(item.id, frame) === false) return; } catch (e) {}
+            }
             var canvas = null;
             if (item.kind === 'folder') {
                 canvas = composeSecondaryFolderCanvas(inst, rig, item.id);
@@ -2391,7 +2625,16 @@
         return visual;
     }
 
-    function layoutOverlayCanvases(inst, rig) {
+    function applyFolderParallaxStyle(group, setting) {
+        if (!group) return;
+        group.style.perspective = '';
+        group.style.transformStyle = '';
+        group.style.transformOrigin = '';
+        group.style.transform = '';
+        group.style.willChange = '';
+    }
+
+function layoutOverlayCanvases(inst, rig) {
         var host = inst.canvas;
         if (!host || !host.parentNode) return;
         hookTrackFileSerialization();
@@ -2417,6 +2660,10 @@
                 if (!isDefaultSetting(settings.get(layer.id))) {
                     var group = ensureFolderGroup(rig, layer.id);
                     var folderSetting = getEffectiveSetting(layer.id, getFrameForInstance(inst, rig));
+                    if (!isLayerFXVisibleAtFrame(layer.id, getFrameForInstance(inst, rig))) {
+                        if (group.parentNode) group.parentNode.removeChild(group);
+                        return;
+                    }
                     while (group.firstChild) group.removeChild(group.firstChild);
                     var children = getFolderChildren(layer.id);
                     children.sort(function (a, b) { return layerOrderIndex(a.id) - layerOrderIndex(b.id); });
@@ -2426,11 +2673,13 @@
                         var visual = getLayerVisualCanvas(inst, rig, child.id, entry);
                         attachLayerVisualForPrimary(entry, visual);
                         var childSetting = getEffectiveSetting(child.id, getFrameForInstance(inst, rig));
+                        if (!isLayerFXVisibleAtFrame(child.id, getFrameForInstance(inst, rig))) return;
                         applyOverlayStyle(visual, childSetting, getFrameCameraZoom(inst, rig));
                         group.appendChild(visual);
                         usedLayerCanvases[child.id] = true;
                     });
                     applyOverlayStyle(group, folderSetting, getFrameCameraZoom(inst, rig));
+                    applyFolderParallaxStyle(group, folderSetting);
                     usedFolderGroups[layer.id] = true;
                     var folderItem = { kind: 'folder', id: layer.id, node: group, order: idx, front: !!folderSetting.front };
                     (folderSetting.front ? front : behind).push(folderItem);
@@ -2444,6 +2693,7 @@
             var visual = getLayerVisualCanvas(inst, rig, layer.id, entry);
             attachLayerVisualForPrimary(entry, visual);
             var setting = getEffectiveSetting(layer.id, getCurrentFrame());
+            if (!isLayerFXVisibleAtFrame(layer.id, getCurrentFrame())) return;
             applyOverlayStyle(visual, setting, getFrameCameraZoom(inst, rig));
             usedLayerCanvases[layer.id] = true;
             (setting.front ? front : behind).push({ kind: 'layer', id: layer.id, node: visual, order: idx, front: !!setting.front });
@@ -2674,7 +2924,7 @@
             container.insertBefore(btn, checkboxEl);
         }
         btn.title = type === LAYER_TYPE_FOLDER
-            ? 'Folder FX: opacity, blur, blend mode, render in front of rider'
+            ? 'Folder FX: opacity, blur, blend mode, visibility, render in front of rider, parallax'
             : 'Layer FX: opacity, blur, blend mode, render in front of rider, gradient';
         btn.dataset.lrmodLayerId = String(layerId);
         btn.dataset.lrmodLayerType = String(type);
@@ -3194,38 +3444,76 @@
 
         var frameHint=document.createElement('div'); frameHint.style.textAlign='center'; frameHint.style.fontSize='10px'; frameHint.style.color='#666'; frameHint.textContent='Frame '+getCurrentFrame()+(curK?' • keyframe':''); panel.appendChild(frameHint);
 
-        var opRow = makeRow('Opacity: ' + Math.round(s.opacity * 100) + '%');
-        var opSlider = document.createElement('input');
-        opSlider.type = 'range';
-        opSlider.min = '0';
-        opSlider.max = '100';
-        opSlider.value = String(Math.round(s.opacity * 100));
-        opSlider.style.width = '100%';
-        opSlider.addEventListener('input', function () {
-            var v = parseInt(opSlider.value, 10) / 100;
-            opRow.label.textContent = 'Opacity: ' + opSlider.value + '%';
-            setSetting(layerId, { opacity: v });
-            updateButtonAppearance(btn, layerId);
-        });
-        opRow.row.appendChild(opSlider);
-        panel.appendChild(opRow.row);
+        function addNumericSliderRow(labelText, value, min, max, step, suffix, toValue, onValue) {
+            var row = document.createElement('div');
+            row.style.marginTop = '8px';
+            var header = document.createElement('div');
+            header.style.display = 'flex';
+            header.style.alignItems = 'center';
+            header.style.justifyContent = 'space-between';
+            header.style.gap = '8px';
+            var label = document.createElement('span');
+            label.textContent = labelText;
+            var number = document.createElement('input');
+            number.type = 'number';
+            number.min = String(min);
+            number.max = String(max);
+            number.step = String(step);
+            number.value = String(value);
+            number.style.width = '72px';
+            number.style.boxSizing = 'border-box';
+            var slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = String(min);
+            slider.max = String(max);
+            slider.step = String(step);
+            slider.value = String(value);
+            slider.style.width = '100%';
 
-        var blurRow = makeRow('Blur: ' + Math.round(s.blur) + ' px');
-        var blurSlider = document.createElement('input');
-        blurSlider.type = 'range';
-        blurSlider.min = '0';
-        blurSlider.max = String(MAX_BLUR_PX);
-        blurSlider.step = '1';
-        blurSlider.value = String(Math.round(s.blur));
-        blurSlider.style.width = '100%';
-        blurSlider.addEventListener('input', function () {
-            var v = parseInt(blurSlider.value, 10) || 0;
-            blurRow.label.textContent = 'Blur: ' + v + ' px';
-            setSetting(layerId, { blur: v });
-            updateButtonAppearance(btn, layerId);
+            function format(v) {
+                return String(v) + (suffix || '');
+            }
+            function clamp(v) {
+                if (!Number.isFinite(v)) v = Number(value) || 0;
+                return Math.max(Number(min), Math.min(Number(max), v));
+            }
+            function commit(v, source) {
+                v = clamp(v);
+                slider.value = String(v);
+                number.value = String(v);
+                onValue(v);
+                if (source === 'input' || source === 'number') updateButtonAppearance(btn, layerId);
+            }
+
+            slider.addEventListener('input', function () {
+                commit(Number(slider.value), 'input');
+            });
+            number.addEventListener('change', function () {
+                commit(Number(number.value), 'number');
+            });
+            number.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    number.blur();
+                }
+            });
+
+            header.appendChild(label);
+            header.appendChild(number);
+            row.appendChild(header);
+            row.appendChild(slider);
+            return { row: row, label: label, number: number, slider: slider, format: format };
+        }
+
+        var opControl = addNumericSliderRow('Opacity:', Math.round(s.opacity * 100), 0, 100, 1, '%', null, function (v) {
+            setSetting(layerId, { opacity: v / 100 });
         });
-        blurRow.row.appendChild(blurSlider);
-        panel.appendChild(blurRow.row);
+        panel.appendChild(opControl.row);
+
+        var blurControl = addNumericSliderRow('Blur:', Math.round(s.blur), 0, MAX_BLUR_PX, 1, ' px', null, function (v) {
+            setSetting(layerId, { blur: v });
+        });
+        panel.appendChild(blurControl.row);
 
         var blendRow = makeRow('Blend mode:');
         var select = document.createElement('select');
@@ -3263,6 +3551,53 @@
             panel.appendChild(gradientModeRow.row);
         }
 
+        if (type === LAYER_TYPE_FOLDER) {
+            var parallaxWrap = document.createElement('label');
+            parallaxWrap.style.display = 'flex';
+            parallaxWrap.style.alignItems = 'center';
+            parallaxWrap.style.marginTop = '10px';
+            parallaxWrap.style.cursor = 'pointer';
+            var parallaxCb = document.createElement('input');
+            parallaxCb.type = 'checkbox';
+            parallaxCb.checked = !!s.parallax;
+            parallaxWrap.appendChild(parallaxCb);
+            var parallaxText = document.createElement('span');
+            parallaxText.textContent = ' Enable parallax';
+            parallaxText.style.marginLeft = '4px';
+            parallaxWrap.appendChild(parallaxText);
+            panel.appendChild(parallaxWrap);
+
+            var parallaxOptions = document.createElement('div');
+            parallaxOptions.style.display = s.parallax ? 'block' : 'none';
+            panel.appendChild(parallaxOptions);
+
+            var zControl = addNumericSliderRow('Z distance:', Math.round(s.parallaxZ), -2000, 2000, 1, ' px', null, function (v) {
+                setSetting(layerId, { parallaxZ: v });
+            });
+            parallaxOptions.appendChild(zControl.row);
+
+            var pitchControl = addNumericSliderRow('Pitch:', Number(s.parallaxPitch).toFixed(2), -20, 20, 0.01, '', null, function (v) {
+                setSetting(layerId, { parallaxPitch: v });
+            });
+            parallaxOptions.appendChild(pitchControl.row);
+
+            var yawControl = addNumericSliderRow('Yaw:', Number(s.parallaxYaw).toFixed(2), -20, 20, 0.01, '', null, function (v) {
+                setSetting(layerId, { parallaxYaw: v });
+            });
+            parallaxOptions.appendChild(yawControl.row);
+
+            var scaleWrap = document.createElement('label'); scaleWrap.style.display = 'flex'; scaleWrap.style.alignItems = 'center'; scaleWrap.style.marginTop = '8px'; scaleWrap.style.cursor = 'pointer';
+            var scaleCb = document.createElement('input'); scaleCb.type = 'checkbox'; scaleCb.checked = s.parallaxScaleLines !== false;
+            scaleCb.addEventListener('change', function () { setSetting(layerId, { parallaxScaleLines: scaleCb.checked }); updateButtonAppearance(btn, layerId); });
+            scaleWrap.appendChild(scaleCb); var scaleText = document.createElement('span'); scaleText.textContent = ' Scale line width to depth'; scaleText.style.marginLeft = '4px'; scaleWrap.appendChild(scaleText); parallaxOptions.appendChild(scaleWrap);
+
+            parallaxCb.addEventListener('change', function () {
+                parallaxOptions.style.display = parallaxCb.checked ? 'block' : 'none';
+                setSetting(layerId, { parallax: parallaxCb.checked });
+                updateButtonAppearance(btn, layerId);
+            });
+        }
+
         var frontWrap = document.createElement('label');
         frontWrap.style.display = 'flex';
         frontWrap.style.alignItems = 'center';
@@ -3281,6 +3616,25 @@
         frontText.style.marginLeft = '4px';
         frontWrap.appendChild(frontText);
         panel.appendChild(frontWrap);
+
+        var visibilityWrap = document.createElement('label');
+        visibilityWrap.style.display = 'flex';
+        visibilityWrap.style.alignItems = 'center';
+        visibilityWrap.style.marginTop = '10px';
+        visibilityWrap.style.cursor = 'pointer';
+        var visibilityCb = document.createElement('input');
+        visibilityCb.type = 'checkbox';
+        visibilityCb.checked = s.visible !== false;
+        visibilityCb.addEventListener('change', function () {
+            setSetting(layerId, { visible: visibilityCb.checked });
+            updateButtonAppearance(btn, layerId);
+        });
+        visibilityWrap.appendChild(visibilityCb);
+        var visibilityText = document.createElement('span');
+        visibilityText.textContent = ' Visible';
+        visibilityText.style.marginLeft = '4px';
+        visibilityWrap.appendChild(visibilityText);
+        panel.appendChild(visibilityWrap);
 
         if (type === LAYER_TYPE_LAYER) {
             if (!normalizeGradient(s.gradient)) {
@@ -3381,7 +3735,7 @@
             try {
                 var millionsEnabled = window.store.getState().renderer.millionsEnabled;
                 if (!millionsEnabled) {
-                    warn('WebGL "Millions" renderer is not active in this browser - layer FX visuals will not apply.');
+                    warn('WebGL "Millions" renderer is not active in this browser - layer FX visuals will not apply (UI/persistence still work). This is normal on old/unaccelerated browsers.');
                 }
             } catch (e) {}
 
