@@ -3,7 +3,7 @@
 // @namespace    https://linerider.com/
 // @author       xavi
 // @description  layer opacity, blur, blend modes, gradients, parallax, and keyframes that save to track file
-// @version      1.10.5
+// @version      1.10.6
 // @license      LGPL 3; https://www.gnu.org/licenses/lgpl-3.0.en.html#license-text
 
 // @match        https://www.linerider.com/*
@@ -27,7 +27,7 @@
 
     var LAYER_TYPE_LAYER = 0;
     var LAYER_TYPE_FOLDER = 1;
-    var TRACK_FX_KEY = 'lrLayerFX';
+    var TRACK_FX_KEY = 'layerFX';
     var TRACK_FX_VERSION = 7;
 
     var GRADIENT_EDITOR_Z = 1000001;
